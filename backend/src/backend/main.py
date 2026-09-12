@@ -7,13 +7,16 @@ are not implemented yet, and no endpoint here produces a recommendation.
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from backend.core.config import get_settings
+from backend.models.chat import ChatRequest
 from backend.models.market import AssetPredictionMarkets, MarketStress, PriceHistory
 from backend.models.portfolio import Portfolio
 from backend.models.quant import (
@@ -22,7 +25,8 @@ from backend.models.quant import (
     SimulationRequest,
     SimulationResult,
 )
-from backend.services import analysis, http
+from backend.services import analysis, chat, http
+from backend.services.cache import analysis_cache
 from backend.services.http import UpstreamError
 from backend.services.polymarket import client as polymarket
 from backend.services.wallet import alchemy
@@ -60,6 +64,8 @@ def _handle(error: Exception) -> HTTPException:
     """Map internal failures onto meaningful HTTP responses."""
     if isinstance(error, analysis.InsufficientDataError):
         return HTTPException(status_code=422, detail=str(error))
+    if isinstance(error, chat.ChatUnavailableError):
+        return HTTPException(status_code=503, detail=str(error))
     if isinstance(error, UpstreamError):
         return HTTPException(status_code=502, detail=str(error))
     return HTTPException(status_code=500, detail=str(error))
@@ -71,6 +77,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "alchemy_configured": settings.alchemy_configured,
+        "chat_configured": settings.chat_configured,
         "networks": settings.alchemy_networks,
     }
 
@@ -208,6 +215,7 @@ async def full_analysis(
     horizon_days: int = Query(default=90, ge=1, le=1095),
     simulations: int = Query(default=10_000, ge=100, le=200_000),
     seed: int | None = None,
+    refresh: bool = Query(default=False, description="Bypass the cached snapshot"),
 ) -> dict:
     """Portfolio, risk, market stress and simulation in one pass.
 
@@ -215,6 +223,9 @@ async def full_analysis(
     decision, which is the job of the agent layer.
     """
     try:
+        if refresh:
+            analysis_cache.clear()
+
         portfolio, estimate = await analysis.load_estimate(address)
         stress = await analysis.load_market_stress(estimate)
 
@@ -246,6 +257,64 @@ async def full_analysis(
         }
     except Exception as error:
         raise _handle(error) from error
+
+
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest) -> StreamingResponse:
+    """Stream an answer about the wallet as server-sent events.
+
+    The quantitative snapshot is loaded (from cache after the first call) and
+    handed to the model as context, so the assistant explains the engine's
+    numbers rather than producing its own.
+    """
+    settings = get_settings()
+    if not settings.chat_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is not set, so the portfolio chat is unavailable",
+        )
+
+    try:
+        portfolio, estimate = await analysis.load_estimate(request.wallet_address)
+        risk = analysis.compute_risk(portfolio, estimate)
+        simulation = analysis.run_simulation(
+            estimate,
+            estimate.total_value,
+            horizon_days=settings.default_horizon_days,
+            simulations=5_000,
+            seed=7,
+        )
+    except Exception as error:
+        raise _handle(error) from error
+
+    async def events():
+        try:
+            stream = chat.stream_reply(
+                message=request.message,
+                history=[item.model_dump() for item in request.history],
+                portfolio=portfolio,
+                risk=risk,
+                simulation=simulation,
+                estimate=estimate,
+                excluded=estimate.excluded,
+            )
+            async for event in stream:
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as error:  # a mid-stream failure still needs a frame
+            logger.exception("Chat stream failed")
+            payload = {"type": "error", "message": str(error)}
+            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def main() -> None:

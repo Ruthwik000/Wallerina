@@ -1,6 +1,5 @@
 import Nav from "@/components/Nav";
 import TopBar from "@/components/TopBar";
-import { recommendation } from "@/lib/data";
 import styles from "./shell.module.css";
 
 export default function AppLayout({ children }) {
@@ -8,7 +7,7 @@ export default function AppLayout({ children }) {
     <div className={styles.shell}>
       <Nav />
       <div className={styles.main}>
-        <TopBar lastAnalysis={recommendation.generatedAt} />
+        <TopBar />
         <main className={styles.content}>{children}</main>
       </div>
     </div>

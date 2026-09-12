@@ -1,133 +1,170 @@
+"use client";
+
+import Meter from "@/components/Meter";
 import PageHeader from "@/components/PageHeader";
+import PageState from "@/components/PageState";
 import Panel from "@/components/Panel";
 import Stat from "@/components/Stat";
-import Meter from "@/components/Meter";
-import Table from "@/components/Table";
+import { Empty, Notice } from "@/components/States";
+import { useWallet } from "@/components/WalletProvider";
 import Donut from "@/components/charts/Donut";
-import { assets, portfolio, priceHistory, transactions } from "@/lib/data";
-import { dateLabel, percent, quantity, usd } from "@/lib/format";
+import { ratio, usd } from "@/lib/format";
 import AssetExplorer from "./AssetExplorer";
 import styles from "../page.module.css";
 
-export const metadata = { title: "Portfolio · Wallerina" };
-
-const TX_COLUMNS = [
-  { key: "date", header: "Date" },
-  { key: "type", header: "Type" },
-  { key: "asset", header: "Asset" },
-  { key: "quantity", header: "Quantity", align: "right" },
-  { key: "value", header: "Value", align: "right" },
-  { key: "chain", header: "Chain", align: "right" },
-];
-
 export default function PortfolioPage() {
-  const stablecoins = assets.filter((asset) => asset.class === "stablecoin");
+  const { portfolio, risk } = useWallet();
+
+  const header = (
+    <PageHeader
+      eyebrow="Overview"
+      title="Portfolio"
+      description="Every priced position the wallet holds across supported networks, with its price history and risk contribution."
+    />
+  );
 
   return (
-    <>
-      <PageHeader
-        eyebrow="Overview"
-        title="Portfolio"
-        description="Every position across connected networks, with the price history and risk contribution behind each one."
-      />
+    <PageState header={header}>
+      {() => {
+        const stablecoins = portfolio.holdings.filter(
+          (holding) => holding.classification === "stablecoin"
+        );
+        const unknown = portfolio.holdings.filter(
+          (holding) => holding.classification === "unknown"
+        );
 
-      <div className={`${styles.statRow} ${styles.statRow4}`}>
-        <Stat
-          label="Total portfolio value"
-          value={usd(portfolio.totalValue, { decimals: 0 })}
-          delta={portfolio.change24h}
-          deltaLabel={`${percent(portfolio.change24h, { sign: true, decimals: 2 })} 24h`}
-          size="lg"
-          emphasis
-        />
-        <Stat
-          label="Positions"
-          value={`${assets.length}`}
-          note={`${portfolio.chains.length} networks`}
-          size="lg"
-        />
-        <Stat
-          label="Stablecoin holdings"
-          value={usd(portfolio.stablecoinValue, { decimals: 0 })}
-          note={`${percent(portfolio.stablecoinRatio)} of book`}
-          size="lg"
-        />
-        <Stat
-          label="Cost basis"
-          value={usd(portfolio.costBasis, { decimals: 0 })}
-          delta={portfolio.totalReturnPct}
-          deltaLabel={`${percent(portfolio.totalReturnPct, { sign: true })} realised + unrealised`}
-          size="lg"
-        />
-      </div>
+        if (portfolio.holdings.length === 0) {
+          return (
+            <Empty
+              title="No priced holdings"
+              detail="This wallet has no positions with a live price above the dust threshold. Spam airdrops and unpriced tokens are filtered out before analysis."
+            />
+          );
+        }
 
-      <AssetExplorer
-        assets={assets}
-        totalValue={portfolio.totalValue}
-        priceHistory={priceHistory}
-      />
-
-      <div className={`${styles.grid} ${styles.cols3}`}>
-        <Panel title="Asset allocation" meta="By share of total value">
-          <Donut
-            segments={portfolio.allocation}
-            caption={`${assets.length}`}
-            captionLabel="Positions"
-          />
-        </Panel>
-
-        <Panel title="Chain breakdown" meta="Value by network">
-          <div className={styles.stack}>
-            {portfolio.chains.map((chain) => (
-              <Meter
-                key={chain.chain}
-                label={chain.chain}
-                value={chain.weight}
-                display={`${percent(chain.weight)} · ${usd(chain.value, { compact: true })}`}
+        return (
+          <>
+            <div className={`${styles.statRow} ${styles.statRow4}`}>
+              <Stat
+                label="Total value"
+                value={usd(portfolio.total_value_usd, { decimals: 0 })}
+                size="lg"
+                emphasis
               />
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="Stablecoin holdings" meta="Peg exposure by issuer">
-          <dl className={styles.defs}>
-            {stablecoins.map((coin) => (
-              <div key={coin.symbol} className={styles.def}>
-                <dt>
-                  {coin.symbol} · {coin.chain}
-                </dt>
-                <dd>{usd(coin.value, { decimals: 0 })}</dd>
-              </div>
-            ))}
-            <div className={`${styles.def} ${styles.defStrong}`}>
-              <dt>Total</dt>
-              <dd>{usd(portfolio.stablecoinValue, { decimals: 0 })}</dd>
+              <Stat
+                label="Positions kept"
+                value={`${portfolio.holdings_kept}`}
+                note={`Filtered from ${portfolio.holdings_scanned.toLocaleString("en-US")} tokens scanned`}
+                size="lg"
+              />
+              <Stat
+                label="Stablecoin holdings"
+                value={usd(portfolio.stablecoin_value_usd, { decimals: 0 })}
+                note={`${ratio(portfolio.stablecoin_ratio)} of book`}
+                size="lg"
+              />
+              <Stat
+                label="Concentration"
+                value={portfolio.concentration.toFixed(3)}
+                note="HHI — 1.0 is a single asset"
+                size="lg"
+              />
             </div>
-          </dl>
-        </Panel>
-      </div>
 
-      <Panel title="Transaction history" meta="Last 40 days" flush>
-        <Table
-          columns={TX_COLUMNS}
-          rows={transactions}
-          rowKey={(tx) => tx.id}
-          renderCell={(tx, column) => {
-            switch (column.key) {
-              case "date":
-                return dateLabel(tx.date);
-              case "quantity":
-                return quantity(tx.quantity);
-              case "value":
-                return usd(tx.value, { decimals: 0 });
-              case "type":
-                return <span className={styles.txType}>{tx.type}</span>;
-              default:
-                return tx[column.key];
-            }
-          }}
-        />
-      </Panel>
-    </>
+            {portfolio.scan_truncated && (
+              <Notice>
+                The page limit was reached before this wallet was fully scanned,
+                so holdings and totals may be understated.
+              </Notice>
+            )}
+
+            <AssetExplorer holdings={portfolio.holdings} riskAssets={risk.assets} />
+
+            <div className={`${styles.grid} ${styles.cols3}`}>
+              <Panel title="Allocation" meta="Top positions by value">
+                <Donut
+                  segments={portfolio.holdings.slice(0, 8).map((holding) => ({
+                    symbol: holding.symbol,
+                    weight: holding.portfolio_ratio * 100,
+                  }))}
+                  caption={`${portfolio.holdings_kept}`}
+                  captionLabel="Positions"
+                />
+              </Panel>
+
+              <Panel title="Chain breakdown" meta="Value by network">
+                <div className={styles.stack}>
+                  {portfolio.chains.map((chain) => (
+                    <Meter
+                      key={chain.network}
+                      label={chain.chain}
+                      value={chain.ratio * 100}
+                      display={`${ratio(chain.ratio)} · ${usd(chain.value_usd, { compact: true })}`}
+                    />
+                  ))}
+                </div>
+              </Panel>
+
+              <Panel title="Stablecoin holdings" meta="Recognised pegs only">
+                {stablecoins.length === 0 ? (
+                  <p className={styles.helper}>
+                    No recognised stablecoin in this wallet. Classification is by
+                    contract address, so a token is never assumed to be a
+                    stablecoin from its name.
+                  </p>
+                ) : (
+                  <dl className={styles.defs}>
+                    {stablecoins.map((coin) => (
+                      <div key={`${coin.symbol}-${coin.network}`} className={styles.def}>
+                        <dt>
+                          {coin.symbol} · {coin.chain}
+                        </dt>
+                        <dd>{usd(coin.value_usd, { decimals: 0 })}</dd>
+                      </div>
+                    ))}
+                    <div className={`${styles.def} ${styles.defStrong}`}>
+                      <dt>Total</dt>
+                      <dd>{usd(portfolio.stablecoin_value_usd, { decimals: 0 })}</dd>
+                    </div>
+                  </dl>
+                )}
+              </Panel>
+            </div>
+
+            {unknown.length > 0 && (
+              <Panel
+                title="Unrecognised assets"
+                meta={`${unknown.length} positions · ${usd(portfolio.unknown_value_usd, { compact: true })}`}
+              >
+                <p className={styles.helper}>
+                  These tokens are not in the trusted asset registry, so they are
+                  classified as unknown rather than guessed at. They are counted
+                  as volatile exposure — treating an unrecognised token as safe
+                  is the one error the classifier must never make.
+                </p>
+                <dl className={styles.defs}>
+                  {unknown.slice(0, 10).map((holding) => (
+                    <div key={`${holding.symbol}-${holding.network}`} className={styles.def}>
+                      <dt>
+                        {holding.symbol} · {holding.chain}
+                      </dt>
+                      <dd>{usd(holding.value_usd, { decimals: 0 })}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </Panel>
+            )}
+
+            <Panel title="Transaction history" meta="Not yet available">
+              <p className={styles.helper}>
+                Wallerina reads current balances, not transfer history. Showing
+                transactions needs a separate indexing endpoint, which the backend
+                does not implement yet.
+              </p>
+            </Panel>
+          </>
+        );
+      }}
+    </PageState>
   );
 }

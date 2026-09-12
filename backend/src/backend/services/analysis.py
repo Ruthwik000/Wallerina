@@ -32,6 +32,7 @@ from backend.quant.monte_carlo import (
     simulate_allocation,
 )
 from backend.quant.risk import TRADING_DAYS, ReturnMatrix
+from backend.services.cache import analysis_cache
 from backend.services.polymarket import client as polymarket
 from backend.services.wallet import alchemy
 
@@ -416,8 +417,26 @@ def run_scenarios(
 # --------------------------------------------------------------------------
 
 
-async def load_estimate(address: str, days: int | None = None) -> tuple[Portfolio, EstimationResult]:
-    """Fetch the wallet and its price history, then estimate parameters."""
+async def load_estimate(
+    address: str, days: int | None = None, use_cache: bool = True
+) -> tuple[Portfolio, EstimationResult]:
+    """Fetch the wallet and its price history, then estimate parameters.
+
+    Cached per wallet: the underlying work is 20+ sequential provider calls,
+    which no interactive client can afford to repeat on every page.
+    """
+    if not use_cache:
+        return await _load_estimate_uncached(address, days)
+
+    key = f"estimate:{address.lower()}:{days}"
+    return await analysis_cache.get_or_compute(
+        key, lambda: _load_estimate_uncached(address, days)
+    )
+
+
+async def _load_estimate_uncached(
+    address: str, days: int | None = None
+) -> tuple[Portfolio, EstimationResult]:
     portfolio = await alchemy.get_portfolio(address)
 
     if not portfolio.holdings:

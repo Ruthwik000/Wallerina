@@ -1,4 +1,5 @@
 import { Gideon_Roman, Open_Sans } from "next/font/google";
+import { WalletProvider } from "@/components/WalletProvider";
 import "./globals.css";
 
 const gideonRoman = Gideon_Roman({
@@ -23,7 +24,9 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className={`${gideonRoman.variable} ${openSans.variable}`}>
-      <body>{children}</body>
+      <body>
+        <WalletProvider>{children}</WalletProvider>
+      </body>
     </html>
   );
 }

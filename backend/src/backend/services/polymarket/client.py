@@ -62,6 +62,50 @@ UPSIDE_PATTERN = re.compile(r"\breach\b|\bhit\b|\babove\b|\ball time high\b|\bex
 MAX_MARKETS_PER_ASSET = 10
 
 
+class _CircuitBreaker:
+    """Stops hammering an unreachable provider.
+
+    Polymarket is blocked outright on some networks. Without a breaker every
+    analysis pays the full timeout on every query, which added ~16 seconds to
+    each request during development.
+    """
+
+    def __init__(self) -> None:
+        self._failures = 0
+        self._open_until = 0.0
+
+    @property
+    def is_open(self) -> bool:
+        if self._open_until and time.monotonic() < self._open_until:
+            return True
+        if self._open_until:
+            # Cooldown elapsed: allow traffic through again.
+            self._open_until = 0.0
+            self._failures = 0
+        return False
+
+    def record_success(self) -> None:
+        self._failures = 0
+        self._open_until = 0.0
+
+    def record_failure(self) -> None:
+        settings = get_settings()
+        self._failures += 1
+        if self._failures >= settings.polymarket_failure_threshold:
+            self._open_until = time.monotonic() + settings.polymarket_cooldown_seconds
+            logger.warning(
+                "Polymarket unreachable; pausing requests for %ss",
+                settings.polymarket_cooldown_seconds,
+            )
+
+    def reset(self) -> None:
+        self._failures = 0
+        self._open_until = 0.0
+
+
+breaker = _CircuitBreaker()
+
+
 def _parse_json_field(value: object) -> object:
     """Gamma encodes list fields as JSON strings; decode them tolerantly."""
     if isinstance(value, str):
@@ -114,6 +158,10 @@ def _direction(question: str) -> str | None:
 async def search_events(query: str) -> list[dict]:
     """Search active Polymarket events."""
     settings = get_settings()
+
+    if breaker.is_open:
+        raise UpstreamError(PROVIDER, "provider unreachable (circuit open)")
+
     url = f"{settings.polymarket_gamma_url}/public-search"
 
     try:
@@ -123,21 +171,28 @@ async def search_events(query: str) -> list[dict]:
             timeout=settings.polymarket_timeout_seconds,
         )
     except Exception as error:  # network failures must not break analysis
+        breaker.record_failure()
         raise UpstreamError(PROVIDER, f"public-search unreachable: {error}") from error
 
     if response.status_code != 200:
+        breaker.record_failure()
         raise UpstreamError(
             PROVIDER,
             f"public-search returned {response.status_code}",
             response.status_code,
         )
 
+    breaker.record_success()
     return response.json().get("events") or []
 
 
 async def fetch_probability_change(token_id: str, window_seconds: int = 300) -> float | None:
     """Relative change in a YES token's price over a trailing window."""
     settings = get_settings()
+
+    if breaker.is_open:
+        return None
+
     now = int(time.time())
 
     try:

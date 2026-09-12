@@ -12,6 +12,13 @@ export function usd(value, { compact = false, decimals = 2 } = {}) {
   }).format(value);
 }
 
+/* The API reports shares as 0-1 fractions; the UI shows percentages. Keeping
+   the conversion in one place avoids scattered `* 100` arithmetic. */
+export function ratio(value, { decimals = 1, sign = false } = {}) {
+  if (value == null || Number.isNaN(value)) return "—";
+  return percent(value * 100, { decimals, sign });
+}
+
 export function percent(value, { decimals = 1, sign = false } = {}) {
   if (value == null || Number.isNaN(value)) return "—";
   const formatted = new Intl.NumberFormat("en-US", {

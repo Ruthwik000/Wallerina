@@ -22,6 +22,10 @@ const SECTIONS = [
     ],
   },
   {
+    title: "Assistant",
+    items: [{ href: "/chat", label: "Ask" }],
+  },
+  {
     title: "Account",
     items: [{ href: "/settings", label: "Settings" }],
   },

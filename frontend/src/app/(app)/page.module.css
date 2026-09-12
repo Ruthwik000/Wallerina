@@ -468,3 +468,8 @@
   border-radius: 0;
   cursor: pointer;
 }
+
+.headerActions {
+  display: flex;
+  gap: 8px;
+}

@@ -1,0 +1,373 @@
+"""Portfolio chat agent.
+
+Answers questions about a specific wallet. The model is given the already
+computed quantitative snapshot as context and one tool for running fresh
+what-if simulations, so it explains and explores the engine's numbers rather
+than inventing its own.
+
+This keeps the specification's core separation intact: the quantitative engine
+decides the numbers, the model explains them. The system prompt states that
+constraint explicitly, and the only way for the model to obtain a new figure is
+to call the simulation tool.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import AsyncIterator
+from typing import Any
+
+import anthropic
+
+from backend.core.config import get_settings
+from backend.models.portfolio import Portfolio
+from backend.models.quant import RiskMetrics, SimulationResult
+from backend.services import analysis
+from backend.services.analysis import EstimationResult
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """\
+You are Wallerina, an assistant that explains a specific crypto wallet's risk \
+position to its owner.
+
+Your role is to interpret numbers that have already been computed by \
+Wallerina's quantitative engine. You never invent portfolio figures. If you \
+need a number that is not in the context below — for example the outcome of a \
+different allocation — call the `run_simulation` tool and use what it returns. \
+If a figure is genuinely unavailable, say so plainly.
+
+How to answer:
+- Be direct and concrete. Lead with the answer, then the reasoning.
+- Quote the actual numbers from the context, with their units.
+- Explain what a metric means when you use it. The user may not know what \
+expected shortfall or a 5th percentile outcome is.
+- Keep responses short — usually two to five sentences. Expand only when the \
+question genuinely needs it.
+- Plain text only. No markdown headers, no bullet characters, no emoji.
+
+Important limits you must respect:
+- You are not a licensed financial adviser and must not tell the user to buy \
+or sell any specific asset, or promise any return. You may explain what the \
+engine's analysis shows and what a given allocation would imply for risk.
+- The simulation assumes zero expected return by default. It is a risk model, \
+not a price forecast. Never present a simulated value as a prediction.
+- Unrecognised tokens are classified "unknown" and counted as volatile. Say so \
+if the user asks why something is categorised the way it is.
+"""
+
+SIMULATION_TOOL: dict[str, Any] = {
+    "name": "run_simulation",
+    "description": (
+        "Run a fresh Monte Carlo simulation on this wallet under a different "
+        "allocation or time horizon. Use this for any 'what if' question — for "
+        "example what happens if the user moves half the book into stablecoins, "
+        "or how the risk looks over a year instead of 90 days. Returns expected, "
+        "median and percentile outcomes, probability of loss, and expected "
+        "drawdown."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "stablecoin_ratio": {
+                "type": "number",
+                "description": (
+                    "Target share of the portfolio held in stablecoins, 0 to 1. "
+                    "Omit to keep the wallet's current allocation."
+                ),
+                "minimum": 0,
+                "maximum": 1,
+            },
+            "horizon_days": {
+                "type": "integer",
+                "description": "Simulation horizon in days, 1 to 1095.",
+                "minimum": 1,
+                "maximum": 1095,
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+}
+
+
+class ChatUnavailableError(RuntimeError):
+    """The chat agent is not configured."""
+
+
+def _client() -> anthropic.AsyncAnthropic:
+    settings = get_settings()
+    if not settings.chat_configured:
+        raise ChatUnavailableError(
+            "ANTHROPIC_API_KEY is not set, so the portfolio chat is unavailable"
+        )
+    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+
+def build_context(
+    portfolio: Portfolio,
+    risk: RiskMetrics,
+    simulation: SimulationResult,
+    excluded: list[str],
+) -> str:
+    """Render the quantitative snapshot the model reasons over.
+
+    Written as plain labelled text rather than raw JSON: it is markedly easier
+    for the model to quote accurately, and cheaper in tokens.
+    """
+    lines: list[str] = []
+
+    lines.append("PORTFOLIO")
+    lines.append(f"Wallet: {portfolio.address}")
+    lines.append(f"Total value: ${portfolio.total_value_usd:,.2f}")
+    lines.append(
+        f"Stablecoin allocation: {portfolio.stablecoin_ratio:.2%} "
+        f"(${portfolio.stablecoin_value_usd:,.2f})"
+    )
+    lines.append(f"Volatile allocation: {portfolio.volatile_ratio:.2%}")
+    lines.append(
+        f"Concentration (HHI, 1.0 = single asset): {portfolio.concentration:.3f}"
+    )
+    if portfolio.scan_truncated:
+        lines.append(
+            "NOTE: the wallet holds more tokens than were scanned, so totals "
+            "may be understated."
+        )
+
+    lines.append("")
+    lines.append("HOLDINGS (symbol, chain, class, value, share of book)")
+    for holding in portfolio.holdings[:25]:
+        lines.append(
+            f"- {holding.symbol} | {holding.chain} | {holding.classification} | "
+            f"${holding.value_usd:,.2f} | {holding.portfolio_ratio:.2%}"
+        )
+    if len(portfolio.holdings) > 25:
+        lines.append(f"- ...and {len(portfolio.holdings) - 25} smaller positions")
+
+    lines.append("")
+    lines.append("RISK (from daily history)")
+    lines.append(
+        f"Annualised volatility: {risk.portfolio_annual_volatility:.2%}"
+    )
+    lines.append(
+        f"Value at Risk ({risk.confidence:.0%}, 1 day): {risk.value_at_risk:.2%} "
+        f"(${risk.value_at_risk_usd:,.2f})"
+    )
+    lines.append(
+        f"Expected shortfall (mean loss beyond VaR): {risk.expected_shortfall:.2%} "
+        f"(${risk.expected_shortfall_usd:,.2f})"
+    )
+    lines.append(f"Worst historical drawdown: {risk.max_drawdown:.2%}")
+    lines.append(f"Observations used: {risk.observations} days")
+
+    lines.append("")
+    lines.append("RISK CONTRIBUTION BY ASSET (share of total portfolio risk)")
+    for asset in risk.assets[:12]:
+        lines.append(
+            f"- {asset.symbol}: {asset.risk_contribution:.2%} of risk, "
+            f"weight {asset.weight:.2%}, volatility {asset.annual_volatility:.1%}, "
+            f"beta {asset.beta_to_portfolio:.2f}"
+        )
+
+    pairs = _notable_correlations(risk)
+    if pairs:
+        lines.append("")
+        lines.append("NOTABLE CORRELATIONS (90+ day daily returns)")
+        lines.extend(pairs)
+
+    lines.append("")
+    lines.append(
+        f"SIMULATION ({simulation.simulations:,} paths, "
+        f"{simulation.horizon_days} days, zero-drift assumption)"
+    )
+    lines.append(f"Starting value: ${simulation.initial_value:,.2f}")
+    lines.append(f"Expected value: ${simulation.expected_value:,.2f}")
+    lines.append(f"Median value: ${simulation.median_value:,.2f}")
+    lines.append(
+        f"5th percentile (bad case): ${simulation.p5:,.2f} — "
+        f"95% of simulated paths ended above this"
+    )
+    lines.append(f"95th percentile (good case): ${simulation.p95:,.2f}")
+    lines.append(f"Probability of ending below today: {simulation.probability_of_loss:.2%}")
+    lines.append(f"Expected peak-to-trough drawdown: {simulation.expected_drawdown:.2%}")
+    lines.append(
+        f"Drawdown exceeded by only 5% of paths: {simulation.max_drawdown_p95:.2%}"
+    )
+
+    if excluded:
+        lines.append("")
+        lines.append(
+            "EXCLUDED FROM ANALYSIS (insufficient price history): "
+            + ", ".join(excluded)
+        )
+
+    return "\n".join(lines)
+
+
+def _notable_correlations(risk: RiskMetrics, threshold: float = 0.6) -> list[str]:
+    """Surface only strongly correlated pairs; a full matrix is mostly noise."""
+    symbols = risk.correlation_symbols
+    matrix = risk.correlation_matrix
+    pairs: list[tuple[float, str]] = []
+
+    for i in range(len(symbols)):
+        for j in range(i + 1, len(symbols)):
+            value = matrix[i][j]
+            if abs(value) >= threshold:
+                pairs.append((abs(value), f"- {symbols[i]} / {symbols[j]}: {value:+.2f}"))
+
+    pairs.sort(reverse=True)
+    return [text for _, text in pairs[:10]]
+
+
+async def _run_simulation_tool(
+    estimate: EstimationResult, tool_input: dict
+) -> dict:
+    """Execute the what-if simulation the model asked for."""
+    settings = get_settings()
+
+    horizon = int(tool_input.get("horizon_days") or settings.default_horizon_days)
+    horizon = max(1, min(horizon, settings.max_horizon_days))
+
+    ratio = tool_input.get("stablecoin_ratio")
+    if ratio is not None:
+        ratio = max(0.0, min(float(ratio), 1.0))
+        if not estimate.stable_mask.any():
+            return {
+                "error": (
+                    "This wallet holds no recognised stablecoin, so capital "
+                    "cannot be rotated into one in the simulation."
+                )
+            }
+
+    result = analysis.run_simulation(
+        estimate,
+        estimate.total_value,
+        horizon_days=horizon,
+        simulations=5_000,  # smaller than the page default; this is interactive
+        seed=7,             # fixed, so repeating a question gives a stable answer
+        stablecoin_ratio=ratio,
+    )
+
+    return {
+        "stablecoin_ratio": round(result.stablecoin_ratio, 4),
+        "horizon_days": result.horizon_days,
+        "starting_value_usd": round(result.initial_value, 2),
+        "expected_value_usd": round(result.expected_value, 2),
+        "median_value_usd": round(result.median_value, 2),
+        "p5_usd": round(result.p5, 2),
+        "p95_usd": round(result.p95, 2),
+        "probability_of_loss": round(result.probability_of_loss, 4),
+        "expected_drawdown": round(result.expected_drawdown, 4),
+        "drawdown_p95": round(result.max_drawdown_p95, 4),
+    }
+
+
+def trim_history(history: list[dict]) -> list[dict]:
+    """Keep the conversation bounded, and always start on a user turn."""
+    settings = get_settings()
+    trimmed = history[-settings.chat_max_history :]
+
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed.pop(0)
+
+    return trimmed
+
+
+async def stream_reply(
+    *,
+    message: str,
+    history: list[dict],
+    portfolio: Portfolio,
+    risk: RiskMetrics,
+    simulation: SimulationResult,
+    estimate: EstimationResult,
+    excluded: list[str],
+) -> AsyncIterator[dict]:
+    """Stream the assistant's reply, running tool calls as they are requested.
+
+    Yields event dicts for the transport layer to serialise:
+      {"type": "text", "text": ...}    incremental response text
+      {"type": "tool", "name": ...}    a tool call started (for UI feedback)
+      {"type": "error", "message": ...}
+      {"type": "done"}
+    """
+    client = _client()
+    settings = get_settings()
+
+    context = build_context(portfolio, risk, simulation, excluded)
+
+    # The snapshot is large and identical across turns of a conversation, so it
+    # goes in the cached prefix ahead of the volatile message history.
+    system = [
+        {"type": "text", "text": SYSTEM_PROMPT},
+        {
+            "type": "text",
+            "text": f"Current analysis for this wallet:\n\n{context}",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+    messages: list[dict] = [*trim_history(history), {"role": "user", "content": message}]
+
+    try:
+        # Loop so the model can call the simulation tool and then answer with
+        # the result. Two rounds is ample for a single what-if question.
+        for _ in range(3):
+            async with client.messages.stream(
+                model=settings.chat_model,
+                max_tokens=settings.chat_max_tokens,
+                system=system,
+                messages=messages,
+                tools=[SIMULATION_TOOL],
+            ) as stream:
+                async for event in stream:
+                    if (
+                        event.type == "content_block_delta"
+                        and event.delta.type == "text_delta"
+                    ):
+                        yield {"type": "text", "text": event.delta.text}
+
+                final = await stream.get_final_message()
+
+            if final.stop_reason != "tool_use":
+                break
+
+            tool_results = []
+            for block in final.content:
+                if block.type != "tool_use":
+                    continue
+
+                yield {"type": "tool", "name": block.name}
+                logger.info("Chat tool call: %s %s", block.name, block.input)
+
+                if block.name == "run_simulation":
+                    output = await _run_simulation_tool(estimate, dict(block.input))
+                else:
+                    output = {"error": f"Unknown tool {block.name}"}
+
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(output),
+                    }
+                )
+
+            messages.append({"role": "assistant", "content": final.content})
+            messages.append({"role": "user", "content": tool_results})
+
+    except ChatUnavailableError:
+        raise
+    except anthropic.APIStatusError as error:
+        logger.exception("Claude API error")
+        yield {
+            "type": "error",
+            "message": f"The assistant is unavailable right now ({error.status_code}).",
+        }
+    except anthropic.APIConnectionError:
+        logger.exception("Claude API unreachable")
+        yield {"type": "error", "message": "Could not reach the assistant."}
+
+    yield {"type": "done"}

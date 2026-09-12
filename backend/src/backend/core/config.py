@@ -38,7 +38,12 @@ class Settings(BaseSettings):
     polymarket_clob_url: str = "https://clob.polymarket.com"
     # Prediction markets are an optional enrichment, so they get a short
     # timeout: analysis must not stall when the provider is unreachable.
-    polymarket_timeout_seconds: float = 8.0
+    polymarket_timeout_seconds: float = 4.0
+    # After this many consecutive failures the client stops trying for
+    # `polymarket_cooldown_seconds`. Without it, every analysis pays the full
+    # timeout on every query when the provider is unreachable.
+    polymarket_failure_threshold: int = 2
+    polymarket_cooldown_seconds: float = 120.0
 
     # --- HTTP -------------------------------------------------------------
     http_timeout_seconds: float = 30.0
@@ -61,6 +66,19 @@ class Settings(BaseSettings):
     max_horizon_days: int = 1_095
     var_confidence: float = 0.95
     simulation_seed: int | None = None
+
+    # --- Cache ------------------------------------------------------------
+    analysis_cache_ttl_seconds: float = 300.0
+
+    # --- Claude -----------------------------------------------------------
+    anthropic_api_key: str = ""
+    chat_model: str = "claude-opus-5"
+    chat_max_tokens: int = 4096
+    chat_max_history: int = 20
+
+    @property
+    def chat_configured(self) -> bool:
+        return bool(self.anthropic_api_key)
 
     @property
     def alchemy_configured(self) -> bool:

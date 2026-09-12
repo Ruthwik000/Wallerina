@@ -1,210 +1,149 @@
+"use client";
+
 import Button from "@/components/Button";
-import Meter from "@/components/Meter";
 import PageHeader from "@/components/PageHeader";
+import PageState from "@/components/PageState";
 import Panel from "@/components/Panel";
-import Stat from "@/components/Stat";
 import Table from "@/components/Table";
-import { market, portfolio, recommendation, risk, simulation } from "@/lib/data";
-import { dateLabel, percent, quantity, usd } from "@/lib/format";
+import { useWallet } from "@/components/WalletProvider";
+import { ratio, usd } from "@/lib/format";
 import styles from "../page.module.css";
 
-export const metadata = { title: "Recommendations · Wallerina" };
-
-const TRADE_COLUMNS = [
-  { key: "action", header: "Action" },
-  { key: "asset", header: "Asset" },
-  { key: "quantity", header: "Quantity", align: "right" },
-  { key: "value", header: "Value", align: "right" },
-  { key: "note", header: "Rationale", align: "right" },
+const COLUMNS = [
+  { key: "name", header: "Allocation" },
+  { key: "stablecoin_ratio", header: "Stablecoin", align: "right" },
+  { key: "expected_value", header: "Expected", align: "right" },
+  { key: "p5", header: "5th percentile", align: "right" },
+  { key: "expected_drawdown", header: "Expected drawdown", align: "right" },
+  { key: "probability_of_loss", header: "Loss probability", align: "right" },
 ];
 
 export default function RecommendationsPage() {
-  const difference =
-    recommendation.targetStablecoinRatio - recommendation.currentStablecoinRatio;
-  const sells = recommendation.trades.filter((trade) => trade.action === "Sell");
-  const buys = recommendation.trades.filter((trade) => trade.action === "Buy");
-  const rotated = sells.reduce((sum, trade) => sum + trade.value, 0);
+  const { scenarios, portfolio, simulation } = useWallet();
+
+  const header = (
+    <PageHeader
+      eyebrow="Analysis"
+      title="Recommendations"
+      description="The allocation engine that turns this evidence into a target is not built yet. What follows is the evidence it will decide from."
+      actions={
+        <Button href="/chat" variant="ghost">
+          Ask about these numbers
+        </Button>
+      }
+    />
+  );
 
   return (
-    <>
-      <PageHeader
-        eyebrow="Analysis"
-        title="Recommendations"
-        description={`Generated ${dateLabel(recommendation.generatedAt)} from the current book, the risk environment and ${simulation.defaults.runs.toLocaleString("en-US")} simulated paths.`}
-        actions={
+    <PageState header={header} loadingLabel="Gathering evidence">
+      {() => {
+        const rows = scenarios ?? [];
+
+        // The best available stand-in for a recommendation: the allocation with
+        // the strongest downside, which is what the engine will optimise for.
+        const bestDownside = rows.reduce(
+          (best, row) => (best === null || row.p5 > best.p5 ? row : best),
+          null
+        );
+
+        return (
           <>
-            <Button variant="ghost">Download report</Button>
-            <Button variant="primary">Execute rebalance</Button>
+            <Panel title="Why there is no recommendation yet" meta="Scope of the current build">
+              <div className={styles.prose}>
+                <p>
+                  Wallerina&apos;s design deliberately separates the quantitative
+                  engine from the allocation decision. The engine — wallet
+                  ingestion, classification, risk measurement and Monte Carlo — is
+                  built and is producing the numbers on this page from live data.
+                </p>
+                <p>
+                  The goal layer, the analysis agents and the allocation engine
+                  that convert those numbers into a target stablecoin ratio are
+                  not implemented. Rather than print a figure no model produced,
+                  this page shows the simulated consequences of each allocation
+                  and leaves the judgement to you.
+                </p>
+              </div>
+            </Panel>
+
+            <Panel
+              title="Allocation evidence"
+              meta={`${simulation.horizon_days}-day horizon · identical market draws across rows`}
+              flush
+            >
+              {rows.length === 0 ? (
+                <p className={styles.helper}>
+                  No scenarios available. This wallet holds no recognised
+                  stablecoin, so there is nothing to rotate capital into.
+                </p>
+              ) : (
+                <Table
+                  columns={COLUMNS}
+                  rows={rows}
+                  rowKey={(row) => row.name}
+                  renderCell={(row, column) => {
+                    switch (column.key) {
+                      case "stablecoin_ratio":
+                        return ratio(row.stablecoin_ratio, { decimals: 1 });
+                      case "expected_value":
+                      case "p5":
+                        return usd(row[column.key], { decimals: 0 });
+                      case "expected_drawdown":
+                      case "probability_of_loss":
+                        return ratio(row[column.key]);
+                      default:
+                        return row.name;
+                    }
+                  }}
+                />
+              )}
+            </Panel>
+
+            {bestDownside && (
+              <div className={`${styles.grid} ${styles.split}`}>
+                <Panel title="What the evidence shows" meta="Read directly from the table">
+                  <div className={styles.prose}>
+                    <p>
+                      Of the allocations simulated, {bestDownside.name.toLowerCase()}{" "}
+                      produces the strongest 5th-percentile outcome at{" "}
+                      {usd(bestDownside.p5, { decimals: 0 })}, with an expected
+                      drawdown of {ratio(bestDownside.expected_drawdown)}.
+                    </p>
+                    <p>
+                      Because the simulator assumes zero expected return, expected
+                      values barely differ between allocations — the entire
+                      difference is in the downside. That is the trade the
+                      allocation engine will eventually have to price against your
+                      stated goal and horizon.
+                    </p>
+                  </div>
+                </Panel>
+
+                <Panel title="Current position" meta="For comparison">
+                  <dl className={styles.defs}>
+                    <div className={`${styles.def} ${styles.defStrong}`}>
+                      <dt>Current stablecoin ratio</dt>
+                      <dd>{ratio(portfolio.stablecoin_ratio)}</dd>
+                    </div>
+                    <div className={styles.def}>
+                      <dt>Current 5th percentile</dt>
+                      <dd>{usd(simulation.p5, { decimals: 0 })}</dd>
+                    </div>
+                    <div className={styles.def}>
+                      <dt>Current expected drawdown</dt>
+                      <dd>{ratio(simulation.expected_drawdown)}</dd>
+                    </div>
+                    <div className={styles.def}>
+                      <dt>Current loss probability</dt>
+                      <dd>{ratio(simulation.probability_of_loss)}</dd>
+                    </div>
+                  </dl>
+                </Panel>
+              </div>
+            )}
           </>
-        }
-      />
-
-      <div className={`${styles.statRow} ${styles.statRow4}`}>
-        <Stat
-          label="Recommended stablecoin allocation"
-          value={percent(recommendation.targetStablecoinRatio, { decimals: 0 })}
-          note={`Acceptable range ${recommendation.acceptableRange[0]}–${recommendation.acceptableRange[1]}% · confidence ${recommendation.confidence}%`}
-          size="lg"
-          emphasis
-        />
-        <Stat
-          label="Current allocation"
-          value={percent(recommendation.currentStablecoinRatio)}
-          note={usd(portfolio.stablecoinValue, { decimals: 0 })}
-          size="lg"
-        />
-        <Stat
-          label="Allocation difference"
-          value={percent(difference, { sign: true })}
-          note={`${usd((Math.abs(difference) / 100) * portfolio.totalValue, { compact: true })} to rotate`}
-          size="lg"
-        />
-        <Stat
-          label="Action"
-          value={recommendation.action}
-          note={`${recommendation.trades.length} trades across ${new Set(recommendation.trades.map((t) => t.asset)).size} assets`}
-          size="lg"
-        />
-      </div>
-
-      <div className={`${styles.grid} ${styles.splitWide}`}>
-        <Panel title="Rebalancing preview" meta="Current against target allocation">
-          <div className={styles.stack}>
-            <Meter
-              label="Stablecoins — current"
-              value={recommendation.currentStablecoinRatio}
-              display={percent(recommendation.currentStablecoinRatio)}
-              secondary={recommendation.targetStablecoinRatio}
-              muted
-            />
-            <Meter
-              label="Stablecoins — target"
-              value={recommendation.targetStablecoinRatio}
-              display={percent(recommendation.targetStablecoinRatio, { decimals: 0 })}
-            />
-            <Meter
-              label="Volatile assets — after rebalance"
-              value={100 - recommendation.targetStablecoinRatio}
-              display={percent(100 - recommendation.targetStablecoinRatio, { decimals: 0 })}
-              muted
-            />
-
-            <dl className={styles.defs}>
-              <div className={styles.def}>
-                <dt>Capital rotated into stablecoins</dt>
-                <dd>{usd(rotated, { decimals: 0 })}</dd>
-              </div>
-              <div className={styles.def}>
-                <dt>Assets to sell</dt>
-                <dd>{sells.map((trade) => trade.asset).join(" · ")}</dd>
-              </div>
-              <div className={styles.def}>
-                <dt>Stablecoins to buy</dt>
-                <dd>{buys.map((trade) => trade.asset).join(" · ")}</dd>
-              </div>
-              <div className={styles.def}>
-                <dt>Assets to hold</dt>
-                <dd>{recommendation.holds.join(" · ")}</dd>
-              </div>
-            </dl>
-          </div>
-        </Panel>
-
-        <Panel title="Expected outcome after rebalance" meta="Against the current book">
-          <div className={styles.stack}>
-            <div className={styles.outcomeGrid}>
-              <Stat
-                label="Risk score"
-                value={`${recommendation.expectedRiskAfter}`}
-                deltaLabel={`from ${risk.score}`}
-                delta={recommendation.expectedRiskAfter - risk.score}
-                emphasis
-              />
-              <Stat
-                label="Expected return"
-                value={percent(recommendation.expectedReturnAfter, { sign: true })}
-                deltaLabel="annualised"
-              />
-              <Stat
-                label="Expected drawdown"
-                value={percent(recommendation.expectedDrawdownAfter)}
-                delta={recommendation.expectedDrawdownAfter - simulation.expectedDrawdown}
-                deltaLabel={`from ${percent(simulation.expectedDrawdown)}`}
-              />
-              <Stat
-                label="Loss probability"
-                value={percent(29.6)}
-                delta={29.6 - simulation.probabilityOfLoss}
-                deltaLabel={`from ${percent(simulation.probabilityOfLoss)}`}
-              />
-            </div>
-
-            <p className={styles.helper}>
-              The rebalance trades {percent(1.8)} of expected terminal value for a
-              materially tighter downside: expected drawdown falls by nearly half
-              and the 5th percentile outcome improves by{" "}
-              {usd(118430 - simulation.p5, { compact: true })}.
-            </p>
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Recommended trades" meta="Ordered for execution" flush>
-        <Table
-          columns={TRADE_COLUMNS}
-          rows={recommendation.trades}
-          rowKey={(trade) => `${trade.action}-${trade.asset}`}
-          renderCell={(trade, column) => {
-            switch (column.key) {
-              case "action":
-                return <span className={styles.txType}>{trade.action}</span>;
-              case "quantity":
-                return quantity(trade.quantity, trade.asset);
-              case "value":
-                return usd(trade.value, { decimals: 0 });
-              case "note":
-                return <span className={styles.tradeNote}>{trade.note}</span>;
-              default:
-                return trade[column.key];
-            }
-          }}
-        />
-      </Panel>
-
-      <div className={`${styles.grid} ${styles.splitWide}`}>
-        <Panel title="Recommendation reasoning" meta="Why the engine reached this allocation">
-          <div className={styles.prose}>
-            {recommendation.reasoning.map((paragraph) => (
-              <p key={paragraph.slice(0, 24)}>{paragraph}</p>
-            ))}
-          </div>
-        </Panel>
-
-        <div className={styles.stackWide}>
-          <Panel title="Market signals" meta={`${market.regime} · sentiment ${market.sentiment}`} flush>
-            <ul className={styles.indicators}>
-              {market.signals.map((signal) => (
-                <li key={signal.name} className={styles.signal}>
-                  <span className={styles.indicatorName}>{signal.name}</span>
-                  <span className={styles.indicatorValue}>{signal.reading}</span>
-                  <span className={styles.indicatorDelta}>{signal.stance}</span>
-                </li>
-              ))}
-            </ul>
-          </Panel>
-
-          <Panel title="Monte Carlo evidence" meta="Inputs behind the decision">
-            <dl className={styles.defs}>
-              {recommendation.evidence.map((item) => (
-                <div key={item.label} className={styles.def}>
-                  <dt>{item.label}</dt>
-                  <dd>{item.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </Panel>
-        </div>
-      </div>
-    </>
+        );
+      }}
+    </PageState>
   );
 }

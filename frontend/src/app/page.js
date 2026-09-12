@@ -1,8 +1,16 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { useState } from "react";
+import ConnectDialog from "@/components/ConnectDialog";
+import { useWallet } from "@/components/WalletProvider";
 import styles from "./landing.module.css";
 
 export default function LandingPage() {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const { connected } = useWallet();
+
   return (
     <div className={styles.page}>
       <Image
@@ -26,6 +34,7 @@ export default function LandingPage() {
             priority
           />
         </Link>
+        <p className={styles.headMeta}>Portfolio risk agents</p>
       </header>
 
       <main className={styles.hero}>
@@ -35,14 +44,26 @@ export default function LandingPage() {
         </p>
 
         <div className={styles.actions}>
-          <Link href="/dashboard" className={styles.primary}>
-            Connect Wallet
-          </Link>
+          <button
+            type="button"
+            className={styles.primary}
+            onClick={() => setDialogOpen(true)}
+          >
+            {connected ? "Change wallet" : "Connect Wallet"}
+          </button>
           <Link href="/dashboard" className={styles.secondary}>
             Enter Dashboard
           </Link>
         </div>
       </main>
+
+      <footer className={styles.foot}>
+        <span>Quantitative allocation engine</span>
+        <span>Monte Carlo evidence</span>
+        <span>Not financial advice</span>
+      </footer>
+
+      <ConnectDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
     </div>
   );
 }
