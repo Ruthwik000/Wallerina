@@ -1,0 +1,165 @@
+/* The landing page is the one surface that runs light: aged ivory ground,
+   black type, and the ballerina held far back as a pale watermark. */
+
+.page {
+  position: relative;
+  min-height: 100vh;
+  background: var(--sepia-light);
+  color: var(--pitch-black);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.backdrop {
+  object-fit: cover;
+  object-position: center;
+  filter: grayscale(1) contrast(0.82) brightness(1.65);
+  opacity: 0.75;
+  mix-blend-mode: multiply;
+  z-index: 0;
+}
+
+/* Flat wash — no gradients anywhere in the system. Holds the image back far
+   enough that black type stays the only strong value on the page. */
+.veil {
+  position: absolute;
+  inset: 0;
+  background: rgba(242, 236, 226, 0.35);
+  z-index: 1;
+}
+
+.head,
+.hero,
+.foot {
+  position: relative;
+  z-index: 2;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 32px 40px;
+}
+
+.brand {
+  display: block;
+  line-height: 0;
+}
+
+/* Folds the gold accent in the source mark down to the monochrome palette and
+   drops its white plate against the ivory ground. */
+.logo {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+  filter: grayscale(1) contrast(1.15);
+  mix-blend-mode: multiply;
+}
+
+.headMeta {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+}
+
+.hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 40px;
+}
+
+.title {
+  font-family: var(--font-display), serif;
+  font-weight: 400;
+  font-size: clamp(64px, 15vw, 208px);
+  line-height: 0.92;
+  letter-spacing: 0.02em;
+  color: var(--pitch-black);
+}
+
+.tagline {
+  margin-top: 28px;
+  max-width: 46ch;
+  font-family: var(--font-display), serif;
+  font-size: clamp(14px, 1.5vw, 18px);
+  letter-spacing: 0.1em;
+  line-height: 1.7;
+  color: var(--pitch-black);
+}
+
+.actions {
+  margin-top: 52px;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.primary,
+.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 40px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  border: 1px solid var(--pitch-black);
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+
+.primary {
+  background: var(--pitch-black);
+  color: var(--sepia-light);
+}
+
+.primary:hover {
+  background: transparent;
+  color: var(--pitch-black);
+}
+
+.secondary {
+  background: transparent;
+  color: var(--pitch-black);
+}
+
+.secondary:hover {
+  background: var(--pitch-black);
+  color: var(--sepia-light);
+}
+
+.foot {
+  display: flex;
+  gap: 40px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 32px 40px 40px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+}
+
+@media (max-width: 720px) {
+  .head,
+  .hero,
+  .foot {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .foot {
+    gap: 18px;
+  }
+}

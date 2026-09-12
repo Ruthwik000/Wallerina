@@ -1,0 +1,66 @@
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+  font-weight: 600;
+}
+
+.value {
+  color: var(--sepia-light);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.sm {
+  font-size: 18px;
+}
+
+.md {
+  font-size: 24px;
+}
+
+.lg {
+  font-size: 36px;
+  font-weight: 300;
+}
+
+.emphasis {
+  color: var(--sepia);
+}
+
+.delta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--sepia-grey);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.up {
+  color: var(--sepia-light);
+}
+
+.down {
+  color: var(--sepia-dark);
+}
+
+.flat {
+  color: var(--sepia-dark);
+}
+
+.note {
+  font-size: 11px;
+  color: var(--sepia-dark);
+  line-height: 1.45;
+}

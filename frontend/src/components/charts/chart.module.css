@@ -1,0 +1,198 @@
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.grid {
+  stroke: rgba(143, 136, 125, 0.16);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.axis {
+  stroke: rgba(143, 136, 125, 0.4);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.line {
+  fill: none;
+  stroke: var(--sepia-light);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.lineSoft {
+  fill: none;
+  stroke: var(--sepia-dark);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.area {
+  fill: rgba(232, 224, 210, 0.07);
+  stroke: none;
+}
+
+.areaInner {
+  fill: rgba(232, 224, 210, 0.14);
+  stroke: none;
+}
+
+.tick {
+  fill: var(--sepia-dark);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  font-family: var(--font-sans), sans-serif;
+}
+
+.tickEnd {
+  text-anchor: end;
+}
+
+.tickMid {
+  text-anchor: middle;
+}
+
+.bar {
+  fill: rgba(232, 224, 210, 0.34);
+}
+
+.barMuted {
+  fill: rgba(232, 224, 210, 0.14);
+}
+
+.marker {
+  stroke: var(--sepia);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+}
+
+.swatch {
+  width: 14px;
+  height: 8px;
+  background: var(--sepia-light);
+}
+
+/* --- Donut --------------------------------------------------------------- */
+
+.donutWrap {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.donut {
+  width: 200px;
+  height: 200px;
+  flex: none;
+}
+
+.donutValue {
+  fill: var(--sepia-light);
+  font-size: 26px;
+  text-anchor: middle;
+  font-family: var(--font-sans), sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+.donutLabel {
+  fill: var(--sepia-dark);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-anchor: middle;
+  text-transform: uppercase;
+  font-family: var(--font-sans), sans-serif;
+}
+
+.donutLegend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 180px;
+  min-width: 180px;
+}
+
+.donutLegendRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.donutLegendRow:last-child {
+  border-bottom: none;
+}
+
+.donutSymbol {
+  flex: 1;
+  letter-spacing: 0.08em;
+  color: var(--sepia-light);
+}
+
+.donutWeight {
+  color: var(--sepia-grey);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Correlation matrix -------------------------------------------------- */
+
+.matrix {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.matrix th {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+  font-weight: 600;
+  padding: 8px;
+  text-align: center;
+}
+
+.matrix th.rowHead {
+  text-align: left;
+  padding-left: 0;
+}
+
+.matrixCell {
+  padding: 0;
+  height: 44px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--sepia-light);
+  border: 1px solid var(--pitch-black);
+}
+
+.matrixDiagonal {
+  color: var(--pitch-black);
+  font-weight: 600;
+}

@@ -1,0 +1,94 @@
+.nav {
+  width: var(--shell-nav);
+  flex: none;
+  background: var(--deep-black);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 22px var(--pad);
+  border-bottom: 1px solid var(--line);
+}
+
+/* The source mark is a black silhouette on white with a gold accent. Inverting
+   and desaturating folds it into the palette: the plate disappears against the
+   black surface and the figure reads as light sepia. */
+.logo {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  filter: grayscale(1) invert(1) brightness(0.94) sepia(0.22);
+  mix-blend-mode: screen;
+}
+
+.wordmark {
+  font-family: var(--font-display), serif;
+  font-size: 20px;
+  letter-spacing: 0.06em;
+  color: var(--sepia-light);
+}
+
+.sections {
+  flex: 1;
+  padding: 24px 0;
+}
+
+.section + .section {
+  margin-top: 26px;
+}
+
+.sectionTitle {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+  padding: 0 var(--pad) 10px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.link {
+  display: block;
+  padding: 10px var(--pad);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--sepia-grey);
+  border-left: 2px solid transparent;
+  transition: color 140ms var(--ease), background 140ms var(--ease),
+    border-color 140ms var(--ease);
+}
+
+.link:hover {
+  color: var(--sepia-light);
+  background: var(--wash);
+}
+
+.active,
+.active:hover {
+  color: var(--pitch-black);
+  background: var(--sepia);
+  border-left-color: var(--sepia-light);
+}
+
+.footer {
+  padding: 18px var(--pad);
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--sepia-dark);
+  letter-spacing: 0.06em;
+}

@@ -1,0 +1,40 @@
+.header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  color: var(--sepia-light);
+  line-height: 1.1;
+}
+
+.description {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--sepia-grey);
+  max-width: 62ch;
+  line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}

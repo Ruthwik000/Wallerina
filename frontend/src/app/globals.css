@@ -1,0 +1,138 @@
+/* ==========================================================================
+   Wallerina design tokens
+   Palette is closed: only the seven values below may be used.
+   ========================================================================== */
+
+:root {
+  /* Surfaces */
+  --pitch-black: #050505;
+  --deep-black: #0a0a0a;
+  --soft-black: #111111;
+
+  /* Sepia — aged ivory, never gold */
+  --sepia: #e8e0d2;
+  --sepia-light: #f2ece2;
+  --sepia-grey: #bdb5a8;
+  --sepia-dark: #8f887d;
+
+  /* Derived: borders and washes, all struck from --sepia-dark */
+  --line: rgba(143, 136, 125, 0.22);
+  --line-strong: rgba(143, 136, 125, 0.45);
+  --wash: rgba(232, 224, 210, 0.06);
+  --wash-strong: rgba(232, 224, 210, 0.12);
+
+  /* Scale */
+  --shell-nav: 232px;
+  --gap: 1px;
+  --pad: 24px;
+  --pad-sm: 16px;
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-radius: 0;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--pitch-black);
+  color: var(--sepia-light);
+  font-family: var(--font-sans), "Open Sans", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--sepia);
+  color: var(--pitch-black);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--pitch-black);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(143, 136, 125, 0.3);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(143, 136, 125, 0.5);
+}
+
+:focus-visible {
+  outline: 1px solid var(--sepia);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Shared primitives
+   -------------------------------------------------------------------------- */
+
+/* Small uppercase label — the one typographic device used for every caption. */
+.label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+  font-weight: 600;
+}
+
+.mono {
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--sepia-grey);
+}
+
+.dim {
+  color: var(--sepia-dark);
+}
