@@ -1,0 +1,49 @@
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--sepia-light);
+  letter-spacing: 0.04em;
+}
+
+.value {
+  font-size: 12px;
+  color: var(--sepia-grey);
+  font-variant-numeric: tabular-nums;
+}
+
+.track {
+  position: relative;
+  height: 6px;
+  background: var(--soft-black);
+  border: 1px solid var(--line);
+}
+
+.fill {
+  height: 100%;
+  background: var(--sepia);
+}
+
+.fillMuted {
+  height: 100%;
+  background: rgba(232, 224, 210, 0.28);
+}
+
+.marker {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--sepia-light);
+}

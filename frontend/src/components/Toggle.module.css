@@ -1,0 +1,56 @@
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.text {
+  min-width: 0;
+}
+
+.label {
+  font-size: 13px;
+  color: var(--sepia-light);
+  cursor: pointer;
+}
+
+.description {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--sepia-dark);
+  line-height: 1.45;
+}
+
+.track {
+  flex: none;
+  width: 44px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  background: var(--pitch-black);
+  padding: 3px;
+  display: flex;
+  transition: border-color 140ms var(--ease), background 140ms var(--ease);
+}
+
+.knob {
+  width: 14px;
+  height: 14px;
+  background: var(--sepia-dark);
+  transition: transform 160ms var(--ease), background 160ms var(--ease);
+}
+
+.on {
+  border-color: var(--sepia);
+}
+
+.on .knob {
+  background: var(--sepia);
+  transform: translateX(22px);
+}
