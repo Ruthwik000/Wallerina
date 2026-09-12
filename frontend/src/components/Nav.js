@@ -67,12 +67,6 @@ export default function Nav() {
           </div>
         ))}
       </div>
-
-      <p className={styles.footer}>
-        Quantitative engine v0.1
-        <br />
-        Analysis is not financial advice
-      </p>
     </nav>
   );
 }

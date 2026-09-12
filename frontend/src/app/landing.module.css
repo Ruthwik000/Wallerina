@@ -14,7 +14,7 @@
 .backdrop {
   object-fit: cover;
   object-position: center;
-  filter: grayscale(1) contrast(0.82) brightness(1.65);
+  filter: grayscale(0.05) contrast(1) brightness(1);
   opacity: 0.75;
   mix-blend-mode: multiply;
   z-index: 0;

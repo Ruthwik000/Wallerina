@@ -1,2 +1,5 @@
-def main() -> None:
-    print("Hello from backend!")
+"""Wallerina backend."""
+
+from backend.main import main
+
+__all__ = ["main"]

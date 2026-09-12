@@ -26,7 +26,6 @@ export default function LandingPage() {
             priority
           />
         </Link>
-        <p className={styles.headMeta}>Portfolio risk agents</p>
       </header>
 
       <main className={styles.hero}>
@@ -44,12 +43,6 @@ export default function LandingPage() {
           </Link>
         </div>
       </main>
-
-      <footer className={styles.foot}>
-        <span>Quantitative allocation engine</span>
-        <span>Monte Carlo evidence</span>
-        <span>Not financial advice</span>
-      </footer>
     </div>
   );
 }
