@@ -471,5 +471,163 @@
 
 .headerActions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+/* --- Recommendations: agent output --------------------------------------- */
+
+.statLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+}
+
+.statValue,
+.statValueStrong {
+  margin-top: 10px;
+  font-size: 26px;
+  font-weight: 300;
+  color: var(--sepia-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.statValueStrong {
+  color: var(--sepia);
+}
+
+.statNote {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--sepia-dark);
+  font-variant-numeric: tabular-nums;
+}
+
+.prose .lead {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--sepia-light);
+}
+
+.prose .subhead {
+  margin-top: 22px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+}
+
+.caveats {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.caveats li {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--sepia-grey);
+}
+
+.caveats li + li {
+  margin-top: 6px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 5px 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+  border: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+
+.badgeGood {
+  color: var(--sepia);
+  border-color: var(--sepia);
+}
+
+.goalText {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--sepia-light);
+}
+
+.panelActions {
+  margin-top: 18px;
+  display: flex;
+  gap: 8px;
+}
+
+.driverRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  gap: 16px;
+  align-items: baseline;
+  padding: 14px var(--pad);
+  border-bottom: 1px solid var(--line);
+}
+
+.driverRow:last-child {
+  border-bottom: none;
+}
+
+.findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.finding {
+  padding: 14px var(--pad);
+  border-bottom: 1px solid var(--line);
+}
+
+.finding:last-child {
+  border-bottom: none;
+}
+
+.findingHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.findingLabel {
+  font-size: 12px;
+  color: var(--sepia-light);
+}
+
+.findingDetail {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--sepia-grey);
+}
+
+.severity {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+  white-space: nowrap;
+}
+
+.severity_moderate {
+  color: var(--sepia-grey);
+}
+
+.severity_elevated {
+  color: var(--sepia-light);
+}
+
+.severity_high {
+  color: var(--sepia);
+  font-weight: 600;
 }

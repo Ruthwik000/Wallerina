@@ -5,7 +5,8 @@ Two paths, deliberately:
 * **Fast path** — a predefined goal maps to rules through a table. No model
   call, so no latency, no cost and no variability. The specification is
   explicit that a preset must not reach an LLM.
-* **Custom path** — free text is sent to Claude, which extracts *intent only*.
+* **Custom path** — free text is sent to the NIM model, which extracts
+  *intent only*.
   It returns a goal type, a risk tolerance and a drawdown limit; it never
   returns an allocation. The numbers still come from the table below.
 
@@ -15,13 +16,10 @@ deterministic layers decide the portfolio.
 
 from __future__ import annotations
 
-import json
 import logging
 
-import anthropic
-
 from backend.agents import llm
-from backend.core.config import get_settings
+from backend.models.agents import AgentContext
 from backend.models.goal import (
     GoalIntent,
     GoalType,
@@ -95,6 +93,32 @@ PRESET_PHRASES: dict[str, GoalType] = {
     "capital preservation": GoalType.CAPITAL_PRESERVATION,
 }
 
+# The presets offered in the UI, in order of rising caution. Each label is an
+# entry in PRESET_PHRASES, so choosing one never reaches the model.
+PRESET_CHOICES: list[tuple[GoalType, str, str]] = [
+    (GoalType.AGGRESSIVE_GROWTH, "Make heavy profit fast", "Maximum upside. Accepts large swings and deep losses."),
+    (GoalType.GROWTH, "Grow steadily", "Grow the portfolio while accepting meaningful volatility."),
+    (GoalType.BALANCED, "Balanced", "Growth with real protection against losses."),
+    (GoalType.SAVE_OVER_TIME, "Save over time", "Accumulate steadily; losses are unwelcome."),
+    (GoalType.CAPITAL_PRESERVATION, "Preserve capital", "Protecting what you already have comes first."),
+]
+
+
+def preset_options() -> list[dict]:
+    """The preset goals with the rule-table figures behind each."""
+    return [
+        {
+            "id": goal_type.value,
+            "label": label,
+            "description": description,
+            "maximum_drawdown": PRESETS[goal_type]["maximum_drawdown"],
+            "base_stablecoin_ratio": PRESETS[goal_type]["base_stablecoin_ratio"],
+            "time_horizon_days": PRESETS[goal_type]["time_horizon_days"],
+        }
+        for goal_type, label, description in PRESET_CHOICES
+    ]
+
+
 EXTRACTION_SYSTEM = """\
 You convert a person's stated financial goal into structured intent.
 
@@ -114,7 +138,7 @@ maximum_drawdown is the largest peak-to-trough loss the person would tolerate, \
 as a decimal between 0.05 and 0.5. If they name a figure ("I don't want to lose \
 more than 15%"), use it exactly. Otherwise infer it from the goal type.
 
-time_horizon_days is their stated horizon in days, or null if they gave none. \
+time_horizon_days is their stated horizon in days; omit it if they gave none. \
 "six months" is 180. "a house in six months" is 180.
 
 interpretation is one short sentence, addressed to the user, saying how you \
@@ -133,7 +157,9 @@ GOAL_SCHEMA = {
             "enum": [tolerance.value for tolerance in RiskTolerance],
         },
         "maximum_drawdown": {"type": "number", "minimum": 0.05, "maximum": 0.5},
-        "time_horizon_days": {"type": ["integer", "null"], "minimum": 1},
+        # Omitted rather than null when no horizon was stated: not every
+        # model accepts union types in a tool schema.
+        "time_horizon_days": {"type": "integer", "minimum": 1},
         "interpretation": {"type": "string"},
     },
     "required": [
@@ -142,7 +168,6 @@ GOAL_SCHEMA = {
         "maximum_drawdown",
         "interpretation",
     ],
-    "additionalProperties": False,
 }
 
 
@@ -202,6 +227,29 @@ def preset_intent(goal_type: GoalType) -> GoalIntent:
     )
 
 
+def context_for(
+    address: str, goal: str, intent: GoalIntent, *, horizon_days: int | None = None
+) -> AgentContext:
+    """Assemble the global context from already-interpreted intent.
+
+    A request-level horizon override is written into the rules here, once, so
+    the simulator, the analysis agents and the explanation cannot disagree
+    about which horizon they are reasoning over.
+    """
+    rules = rules_for(intent)
+    if horizon_days:
+        rules = rules.model_copy(update={"time_horizon_days": horizon_days})
+    return AgentContext(wallet_address=address, goal=goal, intent=intent, rules=rules)
+
+
+async def build_context(
+    address: str, goal: str, *, horizon_days: int | None = None
+) -> AgentContext:
+    """The goal agent's output: the context every other agent runs under."""
+    intent = await interpret(goal)
+    return context_for(address, goal, intent, horizon_days=horizon_days)
+
+
 async def interpret(goal: str) -> GoalIntent:
     """Turn a stated goal into structured intent.
 
@@ -223,41 +271,26 @@ async def interpret(goal: str) -> GoalIntent:
         )
         return intent
 
-    client = llm.client()
-
     try:
-        response = await client.messages.create(
-            model=llm.model_id(),
-            max_tokens=1024,
+        payload = await llm.structured(
             system=EXTRACTION_SYSTEM,
-            messages=[{"role": "user", "content": goal}],
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": GOAL_SCHEMA,
-                }
-            },
+            prompt=goal,
+            name="record_goal",
+            description="Record the structured intent read from the user's goal.",
+            schema=GOAL_SCHEMA,
         )
-    except anthropic.APIError as error:
+        horizon = payload.get("time_horizon_days")
+        return GoalIntent(
+            goal_type=GoalType(payload["goal_type"]),
+            risk_tolerance=RiskTolerance(payload["risk_tolerance"]),
+            # Clamped: smaller models occasionally drift outside the schema.
+            maximum_drawdown=min(max(float(payload["maximum_drawdown"]), 0.05), 0.5),
+            time_horizon_days=int(horizon) if horizon else None,
+            source="llm",
+            interpretation=payload.get("interpretation"),
+        )
+    except (llm.ModelError, KeyError, ValueError, TypeError) as error:
         logger.warning("Goal extraction failed (%s); using balanced preset", error)
         intent = preset_intent(GoalType.BALANCED)
         intent.interpretation = "Could not interpret the goal; using a balanced profile."
         return intent
-
-    payload = _first_json(response)
-
-    return GoalIntent(
-        goal_type=GoalType(payload["goal_type"]),
-        risk_tolerance=RiskTolerance(payload["risk_tolerance"]),
-        maximum_drawdown=float(payload["maximum_drawdown"]),
-        time_horizon_days=payload.get("time_horizon_days"),
-        source="llm",
-        interpretation=payload.get("interpretation"),
-    )
-
-
-def _first_json(response) -> dict:
-    for block in response.content:
-        if block.type == "text":
-            return json.loads(block.text)
-    raise ValueError("Model returned no text block")

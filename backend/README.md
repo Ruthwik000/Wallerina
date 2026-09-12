@@ -130,28 +130,16 @@ drawdown falls monotonically as the stablecoin ratio rises.
 
 ## Model provider
 
-Inference runs on **Amazon Bedrock** by default (`agents/llm.py`), alongside
-the rest of the AWS stack.
+All inference runs on **NVIDIA NIM** (`agents/llm.py`), NVIDIA's hosted,
+OpenAI-compatible API at `integrate.api.nvidia.com`, authenticated with
+`NVIDIA_API_KEY`. The `openai` package is used only as the protocol client;
+nothing is sent to OpenAI.
 
-Bedrock authenticates through the same IAM credential chain as S3, SQS and RDS,
-so on ECS the task role covers it and **there is no API key to store, rotate or
-leak** — the `ANTHROPIC_API_KEY` row disappears from the deployment. Usage lands
-in AWS billing and CloudWatch with everything else.
-
-SageMaker was the alternative and is the wrong shape: it hosts models you bring,
-which would mean paying for a GPU endpoint around the clock to run two short
-text tasks per analysis. Bedrock is inference-as-an-API with no capacity to
-manage.
-
-`LLM_PROVIDER=anthropic` switches to the first-party API for local work without
-an AWS account. Both are the same SDK, so prompts, structured outputs and error
-handling are identical — only the client and the model id differ (Bedrock
-namespaces ids as `anthropic.claude-opus-5`).
-
-Required IAM permissions: `bedrock:InvokeModel`,
-`bedrock:InvokeModelWithResponseStream`. Claude model access must also be
-enabled once per account in the Bedrock console, and availability is
-region-specific — hence the separate `BEDROCK_REGION`.
+The model is one setting, `CHAT_MODEL`, and defaults to Moonshot Kimi K2.6
+(`moonshotai/kimi-k2.6`), which is strong at the tool calls the chat and agents
+make. Any NIM chat model with tool calling can be substituted. Structured output
+is obtained by forcing a single function call (retried with `tool_choice=auto`
+for models that reject forcing), so it works across models.
 
 ### Why not Bedrock Agents / AgentCore
 
@@ -204,7 +192,6 @@ existed. Tests assert that degradation.
 
 | Service | Module | Role |
 |---|---|---|
-| Bedrock | `agents/llm.py` | Model inference for the goal and judgement agents |
 | ECS / Fargate | `Dockerfile` | Container image; non-root, healthchecked |
 | RDS (PostgreSQL) | `aws/database.py` | Snapshots, risk metrics, simulations, recommendation log |
 | S3 | `aws/storage.py` | Historical price series and portfolio snapshots |
@@ -250,11 +237,10 @@ src/backend/
 
 ## Known limitations
 
-* **Polymarket is unreachable from some networks.** It is DNS-blocked by certain
-  ISPs (an Indian ISP returns a sinkhole address instead of Cloudflare), so the
-  client's live behaviour has not been verified end to end — it is written to
-  the response shapes captured in `reference.ipynb` and covered by unit tests
-  against those shapes.
+* **Polymarket is DNS-blocked by some ISPs.** Jio, for one, returns a sinkhole
+  address instead of Cloudflare. The two Polymarket hosts are therefore resolved
+  over DNS-over-HTTPS (`services/dns.py`); set `POLYMARKET_DNS_OVER_HTTPS=false`
+  to use system DNS.
 * **The prediction-market signal is a placeholder.** `compute_market_stress`
   reduces downside markets to a bounded volatility multiplier. Distinguishing a
   10% chance of a 5% dip from a 10% chance of a 50% crash needs the market
@@ -266,10 +252,9 @@ src/backend/
 * **Persistence needs RDS.** Without `DATABASE_URL` nothing is stored, so the
   recommendation log and history endpoint are empty. The schema is created
   automatically on boot when a database is configured.
-* **The AWS layer is untested against real AWS.** It is written to the boto3
-  and Bedrock APIs and covered by unit tests, but no account was available, so
-  no live Bedrock call has been made. Client construction, region resolution
-  and model-id namespacing are verified; the inference round-trip is not.
+* **Only part of the AWS layer is verified live.** S3 (put/get), SQS
+  (send/receive/delete) and CloudWatch metrics have been exercised against a
+  real account. RDS, Secrets Manager, Lambda, EventBridge and ECS have not.
 * **Allocation constants are calibrated by judgement, not fitted.** The
   reference volatility, sensitivities and caps in `quant/allocation.py` are
   reasoned defaults; they have not been backtested against historical

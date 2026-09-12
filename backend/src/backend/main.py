@@ -1,14 +1,16 @@
 """Wallerina FastAPI application.
 
-Scope: data retrieval and the quantitative engine only. The goal/intent layer,
-the analysis agents and the allocation decision described in the specification
-are not implemented yet, and no endpoint here produces a recommendation.
+Data retrieval, the quantitative engine, and the agent pipeline
+(``/api/recommendation``): the goal agent builds a shared context, the wallet,
+market and stablecoin agents analyse under it, the allocation engine decides,
+and the judgement and grounding agents explain and verify.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
@@ -16,10 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from backend.core.config import get_settings
+from backend.agents import goal as goal_layer
 from backend.agents import llm, pipeline
 from backend.aws import database, secrets
 from backend.models.agents import Recommendation
 from backend.models.chat import ChatRequest
+from backend.models.preferences import GoalRequest
 from backend.models.market import AssetPredictionMarkets, MarketStress, PriceHistory
 from backend.models.portfolio import Portfolio
 from backend.models.quant import (
@@ -28,7 +32,7 @@ from backend.models.quant import (
     SimulationRequest,
     SimulationResult,
 )
-from backend.services import analysis, chat, http
+from backend.services import analysis, chat, http, refresh
 from backend.services.cache import analysis_cache
 from backend.services.http import UpstreamError
 from backend.services.polymarket import client as polymarket
@@ -37,6 +41,8 @@ from backend.services.wallet import alchemy
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+ADDRESS_PATTERN = re.compile(r"0x[a-fA-F0-9]{40}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,9 +50,11 @@ async def lifespan(app: FastAPI):
     secrets.load_into_environment()
     await http.startup()
     await database.migrate()
+    refresher = refresh.start()
     try:
         yield
     finally:
+        await refresh.stop(refresher)
         await http.shutdown()
         await database.close()
 
@@ -88,6 +96,7 @@ async def health() -> dict:
         "aws_enabled": settings.aws_enabled,
         "database_configured": settings.database_configured,
         "networks": settings.alchemy_networks,
+        "refresh": refresh.status,
     }
 
 
@@ -271,11 +280,12 @@ async def full_analysis(
 @app.get("/api/recommendation/{address}", response_model=Recommendation)
 async def get_recommendation(
     address: str,
-    goal: str = Query(
-        default="balanced",
+    goal: str | None = Query(
+        default=None,
         description=(
             "A preset ('balanced', 'preserve capital', 'grow steadily', ...) or "
-            "free text. Presets are resolved from a table with no model call."
+            "free text. Presets are resolved from a table with no model call. "
+            "Defaults to the goal saved for this wallet, then 'balanced'."
         ),
     ),
     horizon_days: int | None = Query(default=None, ge=1, le=1095),
@@ -288,12 +298,45 @@ async def get_recommendation(
     The allocation is computed deterministically; the judgement agent only
     explains it.
     """
+    if not goal:
+        saved = await database.get_goal(address)
+        goal = saved["goal"] if saved else "balanced"
+
     try:
         return await pipeline.recommend(
             address, goal, horizon_days=horizon_days, explain=explain
         )
     except Exception as error:
         raise _handle(error) from error
+
+
+@app.get("/api/goals/presets")
+async def goal_presets() -> list[dict]:
+    """The predefined goals. Choosing one never calls the model."""
+    return goal_layer.preset_options()
+
+
+@app.get("/api/goal/{address}")
+async def get_goal(address: str) -> dict:
+    """The goal saved for this wallet, or a null goal."""
+    return await database.get_goal(address) or {"goal": None, "updated_at": None, "persisted": False}
+
+
+@app.put("/api/goal/{address}")
+async def put_goal(address: str, request: GoalRequest) -> dict:
+    """Save the wallet's goal. `persisted` says whether it reached the database."""
+    if not ADDRESS_PATTERN.fullmatch(address):
+        raise HTTPException(status_code=400, detail="Enter a valid 42-character address starting with 0x")
+
+    goal = request.goal.strip()
+    persisted = await database.save_goal(address, goal)
+    return {"goal": goal, "persisted": persisted}
+
+
+@app.post("/api/refresh/run")
+async def run_refresh() -> dict:
+    """Run the background refresh jobs now, instead of waiting for the interval."""
+    return await refresh.run_once()
 
 
 @app.get("/api/recommendation/{address}/history")
@@ -314,10 +357,7 @@ async def chat_endpoint(request: ChatRequest) -> StreamingResponse:
     if not llm.configured():
         raise HTTPException(
             status_code=503,
-            detail=(
-                "No model provider is configured. Set LLM_PROVIDER=bedrock with "
-                "AWS_ENABLED=true, or LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY."
-            ),
+            detail="The chat runs on NVIDIA NIM, which needs NVIDIA_API_KEY in backend/.env.",
         )
 
     try:

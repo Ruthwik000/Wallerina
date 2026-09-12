@@ -10,10 +10,13 @@ Each handler is a thin adapter: it owns the event shape and the asyncio bridge,
 and calls the same service code the API uses. Nothing here reimplements engine
 logic, so a scheduled refresh and an interactive request cannot drift apart.
 
-Suggested EventBridge schedules:
-    refresh_market_data     rate(1 hour)
-    refresh_prediction_data rate(6 hours)
-    snapshot_portfolios     cron(0 2 * * ? *)
+Suggested EventBridge schedules (matching the in-app refresh, services/refresh.py):
+    refresh_market_data     rate(15 minutes)
+    refresh_prediction_data rate(15 minutes)
+    snapshot_portfolios     rate(15 minutes)
+
+The async bodies also run inside the API process on the same interval, so the
+shared HTTP client is only shut down by the call that started it.
 """
 
 from __future__ import annotations
@@ -50,7 +53,7 @@ async def _refresh_market_data() -> dict:
     from backend.services import http
     from backend.services.wallet import alchemy
 
-    await http.startup()
+    started = await http.startup()
     stored, failed = 0, 0
 
     try:
@@ -71,7 +74,8 @@ async def _refresh_market_data() -> dict:
                     telemetry.record_upstream_failure("alchemy")
                     failed += 1
     finally:
-        await http.shutdown()
+        if started:
+            await http.shutdown()
 
     telemetry.put_metric("MarketDataAssetsStored", stored, "Count")
     logger.info("Market refresh: %s stored, %s failed", stored, failed)
@@ -91,7 +95,7 @@ async def _refresh_prediction_data() -> dict:
     from backend.services import http
     from backend.services.polymarket import client as polymarket
 
-    await http.startup()
+    started = await http.startup()
 
     try:
         with telemetry.timed("PredictionDataRefresh"):
@@ -106,7 +110,8 @@ async def _refresh_prediction_data() -> dict:
             else:
                 telemetry.record_upstream_failure("polymarket")
     finally:
-        await http.shutdown()
+        if started:
+            await http.shutdown()
 
     telemetry.put_metric("PredictionMarketsStored", total, "Count")
     logger.info("Prediction refresh: %s markets", total)
@@ -134,7 +139,7 @@ async def _snapshot_portfolios() -> dict:
     async with connection_pool.acquire() as connection:
         rows = await connection.fetch("SELECT address FROM wallets")
 
-    await http.startup()
+    started = await http.startup()
     captured = 0
 
     try:
@@ -153,7 +158,8 @@ async def _snapshot_portfolios() -> dict:
             except Exception as error:
                 logger.warning("Snapshot failed for %s: %s", address, error)
     finally:
-        await http.shutdown()
+        if started:
+            await http.shutdown()
 
     telemetry.put_metric("PortfolioSnapshots", captured, "Count")
     return {"snapshots": captured, "wallets": len(rows)}
@@ -188,7 +194,7 @@ async def _run_simulation_jobs(event) -> dict:
     if not jobs:
         return {"processed": 0}
 
-    await http.startup()
+    started = await http.startup()
     processed = 0
 
     try:
@@ -217,6 +223,7 @@ async def _run_simulation_jobs(event) -> dict:
                 logger.exception("Simulation job failed: %s", error)
                 telemetry.put_metric("SimulationFailures", 1, "Count")
     finally:
-        await http.shutdown()
+        if started:
+            await http.shutdown()
 
     return {"processed": processed}

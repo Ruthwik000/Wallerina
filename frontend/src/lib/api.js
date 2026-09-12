@@ -95,6 +95,35 @@ export function runScenarios(body, { signal } = {}) {
   });
 }
 
+/* Goals. A preset label resolves on the backend with no model call; anything
+   else is read by the goal agent when a recommendation is requested. */
+export function fetchGoalPresets({ signal } = {}) {
+  return request("/api/goals/presets", { signal });
+}
+
+export function fetchGoal(address, { signal } = {}) {
+  return request(`/api/goal/${address}`, { signal });
+}
+
+export function saveGoal(address, goal) {
+  return request(`/api/goal/${address}`, {
+    method: "PUT",
+    body: JSON.stringify({ goal }),
+  });
+}
+
+/* The full agent pipeline: goal, analysis agents, allocation engine, judgement
+   and grounding. A free-text goal adds a model call, so allow up to a minute. */
+export function fetchRecommendation(address, { goal, signal } = {}) {
+  const params = new URLSearchParams();
+  if (goal) params.set("goal", goal);
+  return request(`/api/recommendation/${address}?${params}`, { signal });
+}
+
+export function fetchRecommendationHistory(address, { limit = 10, signal } = {}) {
+  return request(`/api/recommendation/${address}/history?limit=${limit}`, { signal });
+}
+
 /**
  * Stream a chat reply as server-sent events.
  *

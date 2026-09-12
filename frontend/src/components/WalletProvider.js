@@ -1,17 +1,38 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAnalysis, isValidAddress } from "@/lib/api";
+import { fetchAnalysis, fetchGoal, isValidAddress, saveGoal } from "@/lib/api";
 
 const STORAGE_KEY = "wallerina.wallet";
+const GOAL_PREFIX = "wallerina.goal.";
 
 const WalletContext = createContext(null);
 
+function readStoredGoal(address) {
+  try {
+    return window.localStorage.getItem(GOAL_PREFIX + address.toLowerCase());
+  } catch {
+    // Blocked storage; the backend copy is still fetched.
+    return null;
+  }
+}
+
+function writeStoredGoal(address, goal) {
+  try {
+    window.localStorage.setItem(GOAL_PREFIX + address.toLowerCase(), goal);
+  } catch {
+    // Non-persistent session is still usable.
+  }
+}
+
 /**
- * Holds the connected wallet and the analysis fetched for it.
+ * Holds the connected wallet, its goal and the analysis fetched for it.
  *
  * A full analysis costs the backend 20+ provider calls, so it is fetched once
  * here and shared by every page rather than re-requested on navigation.
+ *
+ * The goal is kept per wallet in localStorage for an instant first render and
+ * saved to the backend, which persists it in the database when one is set up.
  */
 export function WalletProvider({ children }) {
   const [address, setAddress] = useState(null);
@@ -20,8 +41,15 @@ export function WalletProvider({ children }) {
   const [error, setError] = useState(null);
   const [restored, setRestored] = useState(false);
 
+  const [goal, setGoalState] = useState(null);
+  const [goalStatus, setGoalStatus] = useState("idle"); // idle | loading | ready
+  const [goalPersisted, setGoalPersisted] = useState(false);
+
   // Lets an in-flight request be abandoned when the wallet changes.
   const requestRef = useRef(null);
+  // Wallets whose goal was chosen in this session; a slower backend read must
+  // not overwrite that choice with an older saved goal.
+  const goalsChosenHere = useRef(new Set());
 
   // Restore the previous session on mount. Reading localStorage during render
   // would break hydration, so it happens in an effect.
@@ -69,21 +97,85 @@ export function WalletProvider({ children }) {
     load(address);
   }, [address, restored, load]);
 
+  // Load the wallet's goal: local copy first, then the backend's.
+  useEffect(() => {
+    if (!restored) return undefined;
+
+    if (!address) {
+      setGoalState(null);
+      setGoalStatus("idle");
+      setGoalPersisted(false);
+      return undefined;
+    }
+
+    const key = address.toLowerCase();
+    const controller = new AbortController();
+    setGoalState(readStoredGoal(address));
+    setGoalStatus("loading");
+
+    fetchGoal(address, { signal: controller.signal })
+      .then((saved) => {
+        if (goalsChosenHere.current.has(key)) return;
+        if (saved?.goal) {
+          setGoalState(saved.goal);
+          setGoalPersisted(Boolean(saved.persisted));
+          writeStoredGoal(address, saved.goal);
+        }
+      })
+      .catch(() => {
+        // Backend unreachable: the local copy stands.
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setGoalStatus("ready");
+      });
+
+    return () => controller.abort();
+  }, [address, restored]);
+
   useEffect(() => () => requestRef.current?.abort(), []);
 
-  const connect = useCallback((value) => {
-    const trimmed = value.trim();
-    if (!isValidAddress(trimmed)) {
-      throw new Error("Enter a valid 42-character address starting with 0x");
-    }
+  const persistGoal = useCallback(async (target, text) => {
+    goalsChosenHere.current.add(target.toLowerCase());
+    writeStoredGoal(target, text);
     try {
-      window.localStorage.setItem(STORAGE_KEY, trimmed);
+      const saved = await saveGoal(target, text);
+      setGoalPersisted(Boolean(saved?.persisted));
+      return Boolean(saved?.persisted);
     } catch {
-      // Non-persistent session is still usable.
+      setGoalPersisted(false);
+      return false;
     }
-    setAddress(trimmed);
-    return trimmed;
   }, []);
+
+  const connect = useCallback(
+    (value, { goal: chosenGoal } = {}) => {
+      const trimmed = value.trim();
+      if (!isValidAddress(trimmed)) {
+        throw new Error("Enter a valid 42-character address starting with 0x");
+      }
+      try {
+        window.localStorage.setItem(STORAGE_KEY, trimmed);
+      } catch {
+        // Non-persistent session is still usable.
+      }
+      if (chosenGoal) {
+        setGoalState(chosenGoal);
+        persistGoal(trimmed, chosenGoal);
+      }
+      setAddress(trimmed);
+      return trimmed;
+    },
+    [persistGoal]
+  );
+
+  const setGoal = useCallback(
+    async (text) => {
+      if (!address || !text) return false;
+      setGoalState(text);
+      return persistGoal(address, text);
+    },
+    [address, persistGoal]
+  );
 
   const disconnect = useCallback(() => {
     try {
@@ -96,6 +188,8 @@ export function WalletProvider({ children }) {
     setAnalysis(null);
     setError(null);
     setStatus("idle");
+    setGoalState(null);
+    setGoalStatus("idle");
   }, []);
 
   const refresh = useCallback(() => {
@@ -110,6 +204,9 @@ export function WalletProvider({ children }) {
       error,
       restored,
       connected: Boolean(address),
+      goal,
+      goalStatus,
+      goalPersisted,
       // Convenience accessors so pages don't reach through `analysis` each time.
       portfolio: analysis?.portfolio ?? null,
       risk: analysis?.risk ?? null,
@@ -120,8 +217,9 @@ export function WalletProvider({ children }) {
       connect,
       disconnect,
       refresh,
+      setGoal,
     }),
-    [address, analysis, status, error, restored, connect, disconnect, refresh]
+    [address, analysis, status, error, restored, goal, goalStatus, goalPersisted, connect, disconnect, refresh, setGoal]
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

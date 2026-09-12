@@ -2,10 +2,15 @@
 
 Runs the flow end to end:
 
-    goal -> rules -> wallet / market / stablecoin analysis
+    goal agent -> AgentContext (intent + global rules)
+         -> wallet / market / stablecoin agents   (all read the context)
          -> quantitative risk -> Monte Carlo
-         -> allocation engine (deterministic)
-         -> judgement agent (explains only)
+         -> allocation engine (deterministic, constrained by context.rules)
+         -> judgement agent (explains only) -> grounding agent (verifies)
+
+The goal agent runs first and exactly once. Its ``AgentContext`` is the single
+source of the user's rules; no downstream agent re-reads the goal or derives
+its own thresholds.
 
 Only two steps touch a language model: reading a free-text goal, and writing
 the explanation. Everything that produces a number is deterministic, which is
@@ -22,7 +27,6 @@ import numpy as np
 from backend.agents import analysts, goal as goal_layer, judgement
 from backend.aws import database, telemetry
 from backend.models.agents import Recommendation
-from backend.models.goal import AllocationDecision, GoalIntent, PortfolioRules
 from backend.quant import allocation
 from backend.services import analysis
 
@@ -41,14 +45,23 @@ async def recommend(
     explain: bool = True,
 ) -> Recommendation:
     """Produce a full recommendation for one wallet."""
-    intent = await goal_layer.interpret(user_goal)
-    rules = goal_layer.rules_for(intent)
+    context = await goal_layer.build_context(address, user_goal, horizon_days=horizon_days)
+    rules = context.rules
+    horizon = context.horizon_days
+    logger.info(
+        "Goal context for %s: %s (%s), band %.2f-%.2f, drawdown limit %.2f, %s days",
+        address,
+        context.intent.goal_type,
+        context.intent.source,
+        rules.minimum_stablecoin_ratio,
+        rules.maximum_stablecoin_ratio,
+        rules.maximum_drawdown,
+        horizon,
+    )
 
     portfolio, estimate = await analysis.load_estimate(address)
     stress = await analysis.load_market_stress(estimate)
     risk = analysis.compute_risk(portfolio, estimate)
-
-    horizon = horizon_days or rules.time_horizon_days
 
     simulation = analysis.run_simulation(
         estimate,
@@ -92,9 +105,9 @@ async def recommend(
     )
 
     reports = [
-        analysts.analyse_wallet(portfolio, risk),
-        analysts.analyse_market(risk, stress, correlation),
-        analysts.analyse_stablecoins(portfolio),
+        analysts.analyse_wallet(context, portfolio, risk),
+        analysts.analyse_market(context, risk, stress, correlation, simulation),
+        analysts.analyse_stablecoins(context, portfolio),
     ]
 
     trades = (
@@ -104,13 +117,14 @@ async def recommend(
     )
 
     verdict = (
-        await judgement.explain(intent, decision, reports) if explain else None
+        await judgement.explain(context, decision, reports) if explain else None
     )
 
     recommendation = Recommendation(
         wallet_address=address,
         generated_at=datetime.now(UTC).isoformat(),
-        intent=intent,
+        goal=context.goal,
+        intent=context.intent,
         rules=rules,
         decision=decision,
         reports=reports,

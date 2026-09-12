@@ -13,12 +13,12 @@ to call the simulation tool.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
-
-import anthropic
 
 from backend.agents import llm
 from backend.core.config import get_settings
@@ -58,9 +58,9 @@ not a price forecast. Never present a simulated value as a prediction.
 if the user asks why something is categorised the way it is.
 """
 
-SIMULATION_TOOL: dict[str, Any] = {
-    "name": "run_simulation",
-    "description": (
+SIMULATION_TOOL: dict[str, Any] = llm.tool_spec(
+    "run_simulation",
+    (
         "Run a fresh Monte Carlo simulation on this wallet under a different "
         "allocation or time horizon. Use this for any 'what if' question — for "
         "example what happens if the user moves half the book into stablecoins, "
@@ -68,7 +68,7 @@ SIMULATION_TOOL: dict[str, Any] = {
         "median and percentile outcomes, probability of loss, and expected "
         "drawdown."
     ),
-    "input_schema": {
+    {
         "type": "object",
         "properties": {
             "stablecoin_ratio": {
@@ -88,23 +88,19 @@ SIMULATION_TOOL: dict[str, Any] = {
             },
         },
         "required": [],
-        "additionalProperties": False,
     },
-}
+)
 
 
 class ChatUnavailableError(RuntimeError):
     """The chat agent is not configured."""
 
 
-def _client():
+def _require_model() -> None:
     if not llm.configured():
         raise ChatUnavailableError(
-            "No model provider is configured, so the portfolio chat is "
-            "unavailable. Set LLM_PROVIDER=bedrock with AWS enabled, or "
-            "LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY."
+            "The portfolio chat runs on NVIDIA NIM, which needs NVIDIA_API_KEY."
         )
-    return llm.client()
 
 
 def build_context(
@@ -234,7 +230,11 @@ async def _run_simulation_tool(
 
     ratio = tool_input.get("stablecoin_ratio")
     if ratio is not None:
-        ratio = max(0.0, min(float(ratio), 1.0))
+        ratio = float(ratio)
+        # Some models send a percentage (50) where a fraction (0.5) is asked for.
+        if ratio > 1:
+            ratio /= 100
+        ratio = max(0.0, min(ratio, 1.0))
         if not estimate.stable_mask.any():
             return {
                 "error": (
@@ -266,6 +266,136 @@ async def _run_simulation_tool(
     }
 
 
+def _normalise(question: str) -> str:
+    return " ".join(re.sub(r"[?!.,]", " ", question.lower()).split())
+
+
+def _value(field: object) -> str:
+    return str(getattr(field, "value", field))
+
+
+def _volatility_label(volatility: float) -> str:
+    if volatility < 0.3:
+        return "low"
+    if volatility < 0.6:
+        return "moderate"
+    if volatility < 1.0:
+        return "high"
+    return "very high"
+
+
+def _answer_how_risky(portfolio, risk, simulation, estimate) -> str:
+    return (
+        f"Your portfolio is worth ${portfolio.total_value_usd:,.2f} and its risk is "
+        f"{_volatility_label(risk.portfolio_annual_volatility)}: annualised volatility is "
+        f"{risk.portfolio_annual_volatility:.0%}. Value at Risk at {risk.confidence:.0%} "
+        f"confidence is {risk.value_at_risk:.2%} (${risk.value_at_risk_usd:,.2f}), meaning "
+        f"on all but the worst {1 - risk.confidence:.0%} of days you would lose less than that "
+        f"in a single day; when losses do exceed it they average {risk.expected_shortfall:.2%} "
+        f"(the expected shortfall). The worst historical peak-to-trough fall was "
+        f"{risk.max_drawdown:.2%}. Over the next {simulation.horizon_days} days the simulation "
+        f"gives a {simulation.probability_of_loss:.0%} chance of ending below today, with an "
+        f"expected drawdown of {simulation.expected_drawdown:.1%} along the way. "
+        f"{portfolio.stablecoin_ratio:.0%} of the book is in stablecoins."
+    )
+
+
+def _answer_top_risk(portfolio, risk, simulation, estimate) -> str:
+    if not risk.assets:
+        return "There is not enough price history to attribute risk to individual assets yet."
+
+    ordered = sorted(risk.assets, key=lambda asset: asset.risk_contribution, reverse=True)
+    top = ordered[0]
+    answer = (
+        f"{top.symbol} contributes the most risk: {top.risk_contribution:.0%} of total portfolio "
+        f"risk while making up {top.weight:.0%} of its value. Risk contribution combines size "
+        f"with how volatile the asset is ({top.annual_volatility:.0%} a year) and how much it "
+        f"moves with the rest of the book (beta {top.beta_to_portfolio:.2f})"
+    )
+    if top.risk_contribution > top.weight:
+        answer += ", so it adds more risk than its share of value alone would suggest."
+    else:
+        answer += "."
+    if len(ordered) > 1:
+        second = ordered[1]
+        answer += (
+            f" Next is {second.symbol} at {second.risk_contribution:.0%} of risk "
+            f"for {second.weight:.0%} of value."
+        )
+    return answer
+
+
+async def _answer_half_stable(portfolio, risk, simulation, estimate) -> str:
+    result = await _run_simulation_tool(
+        estimate, {"stablecoin_ratio": 0.5, "horizon_days": simulation.horizon_days}
+    )
+    if "error" in result:
+        return result["error"]
+
+    return (
+        f"Moving to 50% stablecoins (from {portfolio.stablecoin_ratio:.0%} today), over "
+        f"{simulation.horizon_days} days: the bad-case outcome (5th percentile) goes from "
+        f"${simulation.p5:,.2f} to ${result['p5_usd']:,.2f}; the chance of ending below today "
+        f"goes from {simulation.probability_of_loss:.0%} to {result['probability_of_loss']:.0%}; "
+        f"and the expected drawdown goes from {simulation.expected_drawdown:.1%} to "
+        f"{result['expected_drawdown']:.1%}. The simulation assumes zero expected return, so "
+        f"this shows how much risk the switch removes, not a forecast of gains or losses."
+    )
+
+
+def _answer_p5(portfolio, risk, simulation, estimate) -> str:
+    loss = simulation.initial_value - simulation.p5
+    return (
+        f"Your 5th percentile outcome is ${simulation.p5:,.2f} after {simulation.horizon_days} "
+        f"days, starting from ${simulation.initial_value:,.2f}. Out of {simulation.simulations:,} "
+        f"simulated futures, 95% ended above that value and only the worst 5% ended below it — "
+        f"so it is a realistic bad case, a loss of about ${loss:,.2f}, not the worst case. "
+        f"For comparison the median outcome is ${simulation.median_value:,.2f}. It is a risk "
+        f"measure, not a prediction."
+    )
+
+
+def _answer_unknown(portfolio, risk, simulation, estimate) -> str:
+    unknown = [holding for holding in portfolio.holdings if _value(holding.classification) == "unknown"]
+    if not unknown:
+        return (
+            "None of your current holdings is classified as unknown. A token is marked unknown "
+            "when it is not in Wallerina's trusted asset registry; it is then counted as "
+            "volatile, because an unrecognised token cannot be assumed to hold its value."
+        )
+
+    names = ", ".join(f"{holding.symbol} (${holding.value_usd:,.2f})" for holding in unknown[:8])
+    return (
+        f"These holdings are classified as unknown: {names}. A token is marked unknown when it "
+        f"is not in Wallerina's trusted asset registry — matching on contract address, not just "
+        f"the symbol, because symbols are easy to impersonate. Unknown tokens are counted as "
+        f"volatile, since an unrecognised token cannot be assumed to hold its value."
+    )
+
+
+# The questions the chat UI offers as suggestions (frontend Chat.js).
+PRESET_QUESTIONS = {
+    _normalise("How risky is my portfolio right now?"): _answer_how_risky,
+    _normalise("Which asset contributes the most risk, and why?"): _answer_top_risk,
+    _normalise("What would happen if I moved half of it into stablecoins?"): _answer_half_stable,
+    _normalise("What does my 5th percentile outcome actually mean?"): _answer_p5,
+    _normalise("Why is one of my tokens classified as unknown?"): _answer_unknown,
+}
+
+
+async def preset_answer(message, portfolio, risk, simulation, estimate) -> str | None:
+    """Answer a suggested question from computed figures, or None."""
+    handler = PRESET_QUESTIONS.get(_normalise(message))
+    if handler is None:
+        return None
+
+    answer = handler(portfolio, risk, simulation, estimate)
+    if asyncio.iscoroutine(answer):
+        answer = await answer
+    logger.info("Chat question matched a preset; no model call")
+    return answer
+
+
 def trim_history(history: list[dict]) -> list[dict]:
     """Keep the conversation bounded, and always start on a user turn."""
     settings = get_settings()
@@ -295,81 +425,127 @@ async def stream_reply(
       {"type": "error", "message": ...}
       {"type": "done"}
     """
-    client = _client()
+    # Fast path: the suggested questions are answered straight from the
+    # engine's figures, with no model call — like goal presets.
+    preset = await preset_answer(message, portfolio, risk, simulation, estimate)
+    if preset is not None:
+        yield {"type": "text", "text": preset}
+        yield {"type": "done"}
+        return
+
+    _require_model()
     settings = get_settings()
 
     context = build_context(portfolio, risk, simulation, excluded)
 
-    # The snapshot is large and identical across turns of a conversation, so it
-    # goes in the cached prefix ahead of the volatile message history.
-    system = [
-        {"type": "text", "text": SYSTEM_PROMPT},
-        {
-            "type": "text",
-            "text": f"Current analysis for this wallet:\n\n{context}",
-            "cache_control": {"type": "ephemeral"},
-        },
+    messages: list[dict] = [
+        {"role": "system", "content": f"{SYSTEM_PROMPT}\nCurrent analysis for this wallet:\n\n{context}"},
+        *to_messages(trim_history(history)),
+        {"role": "user", "content": message},
     ]
-
-    messages: list[dict] = [*trim_history(history), {"role": "user", "content": message}]
 
     try:
         # Loop so the model can call the simulation tool and then answer with
         # the result. Two rounds is ample for a single what-if question.
         for _ in range(3):
-            async with client.messages.stream(
-                model=llm.model_id(),
-                max_tokens=settings.chat_max_tokens,
-                system=system,
+            text = ""
+            tool_calls: dict[int, dict] = {}
+            finish_reason = None
+
+            async for chunk in llm.stream_chat(
                 messages=messages,
                 tools=[SIMULATION_TOOL],
-            ) as stream:
-                async for event in stream:
-                    if (
-                        event.type == "content_block_delta"
-                        and event.delta.type == "text_delta"
-                    ):
-                        yield {"type": "text", "text": event.delta.text}
+                tool_choice="auto",
+                max_tokens=settings.chat_max_tokens,
+            ):
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-                final = await stream.get_final_message()
+                if delta.content:
+                    text += delta.content
+                    yield {"type": "text", "text": delta.content}
 
-            if final.stop_reason != "tool_use":
+                for call in delta.tool_calls or []:
+                    entry = tool_calls.setdefault(call.index, {"id": None, "name": "", "arguments": ""})
+                    if call.id:
+                        entry["id"] = call.id
+                    if call.function and call.function.name:
+                        entry["name"] = call.function.name
+                    if call.function and call.function.arguments:
+                        entry["arguments"] += call.function.arguments
+
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+            # Some models end a tool-calling turn with "stop"; the presence of
+            # calls is what matters.
+            if not tool_calls:
                 break
 
-            tool_results = []
-            for block in final.content:
-                if block.type != "tool_use":
-                    continue
+            ordered = [tool_calls[index] for index in sorted(tool_calls)]
+            for position, call in enumerate(ordered):
+                call["id"] = call["id"] or f"call_{position}"
 
-                yield {"type": "tool", "name": block.name}
-                logger.info("Chat tool call: %s %s", block.name, block.input)
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": text or None,
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                        }
+                        for call in ordered
+                    ],
+                }
+            )
 
-                if block.name == "run_simulation":
-                    output = await _run_simulation_tool(estimate, dict(block.input))
+            for call in ordered:
+                try:
+                    arguments = json.loads(call["arguments"]) if call["arguments"].strip() else {}
+                except json.JSONDecodeError:
+                    arguments = {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+
+                yield {"type": "tool", "name": call["name"]}
+                logger.info("Chat tool call: %s %s (finish=%s)", call["name"], arguments, finish_reason)
+
+                if call["name"] == "run_simulation":
+                    output = await _run_simulation_tool(estimate, arguments)
                 else:
-                    output = {"error": f"Unknown tool {block.name}"}
+                    output = {"error": f"Unknown tool {call['name']}"}
 
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(output),
-                    }
-                )
-
-            messages.append({"role": "assistant", "content": final.content})
-            messages.append({"role": "user", "content": tool_results})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output)})
 
     except ChatUnavailableError:
         raise
-    except anthropic.APIStatusError as error:
-        logger.exception("Claude API error")
-        yield {
-            "type": "error",
-            "message": f"The assistant is unavailable right now ({error.status_code}).",
-        }
-    except anthropic.APIConnectionError:
-        logger.exception("Claude API unreachable")
-        yield {"type": "error", "message": "Could not reach the assistant."}
+    except llm.ModelError as error:
+        logger.error("NIM chat call failed: %s", error)
+        yield {"type": "error", "message": str(error)}
 
     yield {"type": "done"}
+
+
+def to_messages(history: list[dict]) -> list[dict]:
+    """Plain {role, content} turns, cleaned for the chat-completions API.
+
+    Blank turns are dropped and adjacent same-role turns merged, and history
+    must end on an assistant turn because the new user message follows it.
+    """
+    messages: list[dict] = []
+    for item in history:
+        text = (item.get("content") or "").strip()
+        if not text:
+            continue
+        if messages and messages[-1]["role"] == item["role"]:
+            messages[-1]["content"] += f"\n\n{text}"
+        else:
+            messages.append({"role": item["role"], "content": text})
+
+    if messages and messages[-1]["role"] == "user":
+        messages.pop()
+    return messages

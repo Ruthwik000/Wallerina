@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Button from "@/components/Button";
 import ConnectDialog from "@/components/ConnectDialog";
+import GoalDialog from "@/components/GoalDialog";
 import PageHeader from "@/components/PageHeader";
 import Panel from "@/components/Panel";
 import { Disconnected } from "@/components/States";
@@ -19,8 +20,9 @@ const NETWORKS = [
 ];
 
 export default function SettingsPage() {
-  const { address, portfolio, connected, restored, disconnect } = useWallet();
+  const { address, portfolio, connected, restored, disconnect, goal, goalPersisted } = useWallet();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [goalOpen, setGoalOpen] = useState(false);
 
   if (!restored) return null;
 
@@ -28,7 +30,7 @@ export default function SettingsPage() {
     <PageHeader
       eyebrow="Account"
       title="Settings"
-      description="The wallet Wallerina is reading and the networks it scans."
+      description="The wallet Wallerina is reading, its goal and the networks it scans."
     />
   );
 
@@ -118,12 +120,27 @@ export default function SettingsPage() {
         </dl>
       </Panel>
 
-      <Panel title="Preferences" meta="Not yet available">
-        <p className={styles.helper}>
-          Risk objective, investment horizon, maximum drawdown and notification
-          settings need the goal layer and a database to persist them. Neither is
-          implemented, so nothing here would survive a reload.
-        </p>
+      <Panel
+        title="Goal"
+        meta="Sets the rules every agent works within"
+        action={
+          <Button variant="ghost" size="sm" onClick={() => setGoalOpen(true)}>
+            {goal ? "Change" : "Set goal"}
+          </Button>
+        }
+      >
+        <dl className={styles.defs}>
+          <div className={`${styles.def} ${styles.defStrong}`}>
+            <dt>Current goal</dt>
+            <dd>{goal ?? "Not set"}</dd>
+          </div>
+          <div className={styles.def}>
+            <dt>Stored</dt>
+            <dd>
+              {!goal ? "—" : goalPersisted ? "Saved to the database" : "Saved in this browser"}
+            </dd>
+          </div>
+        </dl>
       </Panel>
 
       <ConnectDialog
@@ -131,6 +148,7 @@ export default function SettingsPage() {
         onClose={() => setDialogOpen(false)}
         redirectTo="/settings"
       />
+      <GoalDialog open={goalOpen} onClose={() => setGoalOpen(false)} />
     </>
   );
 }

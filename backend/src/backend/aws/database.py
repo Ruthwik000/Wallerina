@@ -88,7 +88,31 @@ CREATE TABLE IF NOT EXISTS recommendations (
 );
 CREATE INDEX IF NOT EXISTS recommendations_address_time
     ON recommendations (address, generated_at DESC);
+
+-- The goal each wallet is analysed against, so it survives reloads and devices.
+CREATE TABLE IF NOT EXISTS wallet_goals (
+    address           TEXT PRIMARY KEY REFERENCES wallets(address) ON DELETE CASCADE,
+    goal              TEXT NOT NULL,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
+
+# Goals are also kept in memory, so a chosen goal still works for this process
+# when no database is configured.
+_memory_goals: dict[str, dict] = {}
+
+
+def normalise_dsn(url: str) -> str:
+    """Accept SQLAlchemy-style URLs (postgresql+psycopg2://) for asyncpg.
+
+    asyncpg only understands the plain postgresql:// scheme, but URLs copied
+    from ORMs and tutorials often carry a driver suffix.
+    """
+    url = url.strip()
+    scheme, separator, rest = url.partition("://")
+    if separator and "+" in scheme:
+        scheme = scheme.split("+", 1)[0]
+    return f"{scheme}{separator}{rest}"
 
 
 async def pool():
@@ -102,7 +126,7 @@ async def pool():
     if _pool is None:
         try:
             _pool = await asyncpg.create_pool(
-                settings.database_url,
+                normalise_dsn(settings.database_url),
                 min_size=1,
                 max_size=settings.database_pool_size,
                 command_timeout=15,
@@ -221,6 +245,57 @@ async def save_recommendation(address: str, recommendation: dict) -> bool:
     except Exception as error:
         logger.warning("Could not log recommendation for %s: %s", address, error)
         return False
+
+
+async def save_goal(address: str, goal: str) -> bool:
+    """Store the wallet's goal. Returns whether it reached the database."""
+    key = address.lower()
+    _memory_goals[key] = {"goal": goal, "updated_at": datetime.now(UTC).isoformat()}
+
+    connection_pool = await pool()
+    if connection_pool is None:
+        return False
+
+    try:
+        async with connection_pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "INSERT INTO wallets (address) VALUES ($1) ON CONFLICT (address) DO NOTHING",
+                key,
+            )
+            await connection.execute(
+                """
+                INSERT INTO wallet_goals (address, goal, updated_at)
+                VALUES ($1, $2, now())
+                ON CONFLICT (address) DO UPDATE
+                SET goal = EXCLUDED.goal, updated_at = now()
+                """,
+                key,
+                goal,
+            )
+        return True
+    except Exception as error:
+        logger.warning("Could not save goal for %s: %s", address, error)
+        return False
+
+
+async def get_goal(address: str) -> dict | None:
+    """The saved goal for a wallet: database first, then this process's memory."""
+    key = address.lower()
+    connection_pool = await pool()
+
+    if connection_pool is not None:
+        try:
+            async with connection_pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    "SELECT goal, updated_at FROM wallet_goals WHERE address = $1", key
+                )
+            if row:
+                return {"goal": row["goal"], "updated_at": row["updated_at"].isoformat(), "persisted": True}
+        except Exception as error:
+            logger.warning("Could not read goal for %s: %s", address, error)
+
+    record = _memory_goals.get(key)
+    return {**record, "persisted": False} if record else None
 
 
 async def recent_recommendations(address: str, limit: int = 10) -> list[dict]:

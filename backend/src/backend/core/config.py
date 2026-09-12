@@ -38,12 +38,17 @@ class Settings(BaseSettings):
     polymarket_clob_url: str = "https://clob.polymarket.com"
     # Prediction markets are an optional enrichment, so they get a short
     # timeout: analysis must not stall when the provider is unreachable.
-    polymarket_timeout_seconds: float = 4.0
+    polymarket_timeout_seconds: float = 8.0
     # After this many consecutive failures the client stops trying for
     # `polymarket_cooldown_seconds`. Without it, every analysis pays the full
     # timeout on every query when the provider is unreachable.
     polymarket_failure_threshold: int = 2
     polymarket_cooldown_seconds: float = 120.0
+    # Resolve the Polymarket hosts over DNS-over-HTTPS. Some ISPs (e.g. Jio)
+    # return a sinkhole address for them, so system DNS never connects.
+    polymarket_dns_over_https: bool = True
+    # Addressed by IP so the lookup itself does not depend on local DNS.
+    dns_over_https_url: str = "https://1.1.1.1/dns-query"
 
     # --- HTTP -------------------------------------------------------------
     http_timeout_seconds: float = 30.0
@@ -70,29 +75,25 @@ class Settings(BaseSettings):
     # --- Cache ------------------------------------------------------------
     analysis_cache_ttl_seconds: float = 300.0
 
-    # --- Model provider ---------------------------------------------------
-    # "bedrock" runs inference on Amazon Bedrock using the same IAM credentials
-    # as the rest of the AWS stack. "anthropic" calls the first-party API and
-    # needs ANTHROPIC_API_KEY; useful for local work without an AWS account.
-    llm_provider: str = "bedrock"
-    # Defaults to aws_region when blank. Bedrock model availability is
-    # region-specific, so this is separable.
-    bedrock_region: str = ""
-    anthropic_api_key: str = ""
-    chat_model: str = "claude-opus-5"
-    chat_max_tokens: int = 4096
+    # --- Background refresh ----------------------------------------------
+    # Every refresh_interval_minutes the API re-caches core price history and
+    # Polymarket data in S3 and snapshots tracked wallets (services/refresh.py).
+    # Turn off when the same jobs run on an EventBridge schedule instead.
+    refresh_enabled: bool = True
+    refresh_interval_minutes: int = 15
+    refresh_snapshots: bool = True
+
+    # --- Model (NVIDIA NIM) -----------------------------------------------
+    # All model calls go to NVIDIA's hosted NIM API (OpenAI-compatible).
+    # Key from https://build.nvidia.com (starts with nvapi-).
+    nvidia_api_key: str = ""
+    nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    # Any NIM chat model with tool calling. Nemotron 3 Super was verified to
+    # call the simulation tool correctly; availability varies by account.
+    chat_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    chat_timeout_seconds: float = 60.0
+    chat_max_tokens: int = 2048
     chat_max_history: int = 20
-
-    @property
-    def chat_configured(self) -> bool:
-        """Whether a model provider is usable.
-
-        Bedrock carries no key of its own — it authenticates through the AWS
-        credential chain, so enabling AWS is what makes it available.
-        """
-        if self.llm_provider.strip().lower() == "bedrock":
-            return self.aws_enabled
-        return bool(self.anthropic_api_key)
 
     # --- AWS --------------------------------------------------------------
     # Every AWS integration is optional; with aws_enabled false the service

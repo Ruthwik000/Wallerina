@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Keys the application understands. Anything else in the secret is ignored.
 KNOWN_KEYS = {
     "ALCHEMY_API_KEY",
-    "ANTHROPIC_API_KEY",
+    "NVIDIA_API_KEY",
     "DATABASE_URL",
     "POLYMARKET_GAMMA_URL",
     "POLYMARKET_CLOB_URL",

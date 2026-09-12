@@ -5,6 +5,10 @@ the quantitative layer and reports findings. No model call is needed to observe
 that two assets are correlated at 0.9, and using one would add latency, cost and
 variance to a fact.
 
+Each agent receives the goal agent's ``AgentContext`` and judges what it sees
+against those rules: a 20% simulated drawdown is fine for aggressive growth and
+a breach for capital preservation.
+
 The model enters at the judgement step, where the job is genuinely linguistic.
 """
 
@@ -13,7 +17,8 @@ from __future__ import annotations
 import numpy as np
 
 from backend.assets.registry import AssetClass
-from backend.models.agents import AgentReport, Finding
+from backend.models.agents import AgentContext, AgentReport, Finding
+from backend.models.goal import RiskTolerance
 from backend.models.market import MarketStress
 from backend.models.portfolio import Portfolio
 from backend.models.quant import RiskMetrics, SimulationResult
@@ -38,9 +43,32 @@ def _severity(value: float, moderate: float, elevated: float, high: float) -> st
     return "low"
 
 
-def analyse_wallet(portfolio: Portfolio, risk: RiskMetrics) -> AgentReport:
+def analyse_wallet(
+    context: AgentContext, portfolio: Portfolio, risk: RiskMetrics
+) -> AgentReport:
     """Composition, concentration and where the risk actually sits."""
+    rules = context.rules
     findings: list[Finding] = []
+
+    # Goal fit: is the book inside the stablecoin band the goal allows?
+    held = portfolio.stablecoin_ratio
+    low, high = rules.minimum_stablecoin_ratio, rules.maximum_stablecoin_ratio
+    gap = low - held if held < low else held - high if held > high else 0.0
+    findings.append(
+        Finding(
+            label="Goal fit",
+            detail=(
+                f"{held:.0%} held in stablecoins against the {low:.0%}–{high:.0%} "
+                f"band a {context.intent.goal_type.value.replace('_', ' ')} goal allows"
+                + (
+                    ""
+                    if gap == 0
+                    else f" — {gap:.0%} {'below the floor' if held < low else 'above the ceiling'}"
+                )
+            ),
+            severity=_severity(gap, 0.001, rules.rebalance_threshold, 2 * rules.rebalance_threshold),
+        )
+    )
 
     findings.append(
         Finding(
@@ -129,10 +157,31 @@ def analyse_wallet(portfolio: Portfolio, risk: RiskMetrics) -> AgentReport:
 
 
 def analyse_market(
-    risk: RiskMetrics, stress: MarketStress | None, correlation: float
+    context: AgentContext,
+    risk: RiskMetrics,
+    stress: MarketStress | None,
+    correlation: float,
+    simulation: SimulationResult | None = None,
 ) -> AgentReport:
     """The risk environment the portfolio is sitting in."""
+    limit = context.rules.maximum_drawdown
     findings: list[Finding] = []
+
+    # The goal's drawdown limit is the yardstick for the simulated future.
+    if simulation is not None:
+        ratio = simulation.expected_drawdown / limit if limit else 0.0
+        findings.append(
+            Finding(
+                label="Drawdown against goal",
+                detail=(
+                    f"Simulated expected drawdown over {simulation.horizon_days} days "
+                    f"is {simulation.expected_drawdown:.1%} as held, against the "
+                    f"{limit:.0%} limit set by the goal; 5% of paths fall "
+                    f"{simulation.max_drawdown_p95:.1%} or more"
+                ),
+                severity=_severity(ratio, 0.6, 0.85, 1.0),
+            )
+        )
 
     gap = risk.portfolio_annual_volatility - REFERENCE_VOLATILITY
     findings.append(
@@ -209,13 +258,15 @@ def analyse_market(
     )
 
 
-def analyse_stablecoins(portfolio: Portfolio) -> AgentReport:
+def analyse_stablecoins(context: AgentContext, portfolio: Portfolio) -> AgentReport:
     """Whether the safe half of the book is actually safe.
 
     Rotating into stablecoins is only risk reduction if the pegs hold and the
     issuers are diversified, so both are checked before any rebalance is
-    proposed.
+    proposed. A cautious goal leans on that leg harder, so the same weakness
+    is rated more severely.
     """
+    cautious = context.rules.risk_tolerance is RiskTolerance.LOW
     stables = [h for h in portfolio.holdings if h.classification is AssetClass.STABLECOIN]
     findings: list[Finding] = []
 
@@ -228,9 +279,11 @@ def analyse_stablecoins(portfolio: Portfolio) -> AgentReport:
                     label="No stable leg",
                     detail=(
                         "The wallet holds no stablecoin in the trusted registry, "
-                        "so there is nothing to rotate into without acquiring one"
+                        "so there is nothing to rotate into without acquiring one, "
+                        f"yet the goal calls for at least "
+                        f"{context.rules.minimum_stablecoin_ratio:.0%}"
                     ),
-                    severity="elevated",
+                    severity="high" if context.rules.minimum_stablecoin_ratio >= 0.25 else "elevated",
                 )
             ],
         )
@@ -273,7 +326,7 @@ def analyse_stablecoins(portfolio: Portfolio) -> AgentReport:
                     f"The entire stable allocation sits in {next(iter(issuers))}; "
                     "a single issuer failure would affect all of it"
                 ),
-                severity="moderate",
+                severity="elevated" if cautious else "moderate",
             )
         )
 

@@ -12,15 +12,11 @@ model's reply — so a hallucinated percentage cannot reach the user.
 
 from __future__ import annotations
 
-import json
 import logging
 
-import anthropic
-
-from backend.agents import llm
-from backend.core.config import get_settings
-from backend.models.agents import AgentReport, Judgement
-from backend.models.goal import AllocationDecision, GoalIntent
+from backend.agents import grounding, llm
+from backend.models.agents import AgentContext, AgentReport, Judgement
+from backend.models.goal import AllocationDecision
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +38,7 @@ You are explaining risk, not giving financial advice.
 - If confidence is low or data is missing, say so plainly in the caveats.
 - Plain prose. No markdown, no bullet characters, no emoji.
 
-Return JSON with:
+Record your explanation with the record_explanation tool:
 - summary: two or three sentences. What the engine concluded and the single \
 biggest reason.
 - reasoning: three to five strings, each one paragraph, walking through the \
@@ -68,24 +64,33 @@ SCHEMA = {
         },
     },
     "required": ["summary", "reasoning", "caveats"],
-    "additionalProperties": False,
 }
 
 
 def build_brief(
-    intent: GoalIntent, decision: AllocationDecision, reports: list[AgentReport]
+    context: AgentContext, decision: AllocationDecision, reports: list[AgentReport]
 ) -> str:
     """The facts the explainer is allowed to use. Nothing else is in scope."""
+    intent, rules = context.intent, context.rules
     lines: list[str] = []
 
     lines.append("USER GOAL")
+    lines.append(f"Stated goal: {context.goal}")
     lines.append(f"Goal type: {intent.goal_type}")
-    lines.append(f"Risk tolerance: {intent.risk_tolerance}")
-    lines.append(f"Maximum acceptable drawdown: {intent.maximum_drawdown:.0%}")
-    if intent.time_horizon_days:
-        lines.append(f"Time horizon: {intent.time_horizon_days} days")
+    lines.append(f"Risk tolerance: {rules.risk_tolerance}")
+    lines.append(f"Maximum acceptable drawdown: {rules.maximum_drawdown:.0%}")
+    lines.append(f"Time horizon: {rules.time_horizon_days} days")
     if intent.interpretation:
         lines.append(f"How the goal was read: {intent.interpretation}")
+
+    lines.append("")
+    lines.append("RULES SET BY THE GOAL (every agent worked within these)")
+    lines.append(f"Base stablecoin ratio: {rules.base_stablecoin_ratio:.0%}")
+    lines.append(
+        f"Allowed stablecoin band: {rules.minimum_stablecoin_ratio:.0%} to "
+        f"{rules.maximum_stablecoin_ratio:.0%}"
+    )
+    lines.append(f"Rebalance threshold: {rules.rebalance_threshold:.0%}")
 
     lines.append("")
     lines.append("DECISION (already made — explain, do not change)")
@@ -164,35 +169,62 @@ def _fallback(decision: AllocationDecision, reports: list[AgentReport]) -> Judge
 
 
 async def explain(
-    intent: GoalIntent, decision: AllocationDecision, reports: list[AgentReport]
+    context: AgentContext, decision: AllocationDecision, reports: list[AgentReport]
 ) -> Judgement:
-    """Explain the allocation. Falls back to a deterministic write-up."""
-    if not llm.configured():
-        return _fallback(decision, reports)
+    """Explain the allocation, then have the grounding agent verify it.
 
-    client = llm.client()
-    brief = build_brief(intent, decision, reports)
+    Falls back to the deterministic write-up when the model is unavailable,
+    fails, or cites a figure the engine did not produce.
+    """
+    brief = build_brief(context, decision, reports)
+
+    if not llm.configured():
+        return _checked_fallback(decision, reports, brief)
 
     try:
-        response = await client.messages.create(
-            model=llm.model_id(),
-            max_tokens=2048,
+        payload = await llm.structured(
             system=SYSTEM,
-            messages=[{"role": "user", "content": brief}],
-            output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+            prompt=brief,
+            name="record_explanation",
+            description="Record the explanation of the allocation decision.",
+            schema=SCHEMA,
+            max_tokens=2048,
         )
-    except anthropic.APIError as error:
+        reasoning = [str(item) for item in payload["reasoning"]]
+        caveats = [str(item) for item in payload["caveats"]]
+        if not payload["summary"] or not reasoning:
+            raise ValueError("empty explanation")
+        judgement = Judgement(
+            summary=str(payload["summary"]),
+            reasoning=reasoning,
+            caveats=caveats,
+            used_model=True,
+        )
+    except (llm.ModelError, KeyError, ValueError, TypeError) as error:
         logger.warning("Judgement agent failed (%s); using deterministic write-up", error)
-        return _fallback(decision, reports)
+        return _checked_fallback(decision, reports, brief)
 
-    for block in response.content:
-        if block.type == "text":
-            payload = json.loads(block.text)
-            return Judgement(
-                summary=payload["summary"],
-                reasoning=payload["reasoning"],
-                caveats=payload["caveats"],
-                used_model=True,
-            )
+    report = grounding.check(judgement.summary, *judgement.reasoning, *judgement.caveats, brief=brief)
+    if report.grounded:
+        judgement.grounding = report
+        return judgement
 
-    return _fallback(decision, reports)
+    logger.warning(
+        "Explanation cited figures the engine did not produce (%s); using deterministic write-up",
+        ", ".join(report.rejected),
+    )
+    replacement = _checked_fallback(decision, reports, brief)
+    replacement.grounding.replaced_model_output = True
+    replacement.grounding.rejected = report.rejected
+    return replacement
+
+
+def _checked_fallback(
+    decision: AllocationDecision, reports: list[AgentReport], brief: str
+) -> Judgement:
+    """The deterministic write-up, with its own grounding report attached."""
+    judgement = _fallback(decision, reports)
+    judgement.grounding = grounding.check(
+        judgement.summary, *judgement.reasoning, *judgement.caveats, brief=brief
+    )
+    return judgement
