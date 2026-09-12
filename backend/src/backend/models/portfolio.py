@@ -55,3 +55,10 @@ class Portfolio(BaseModel):
         description="Tokens returned by the provider before spam and dust filtering"
     )
     holdings_kept: int
+    scan_truncated: bool = Field(
+        default=False,
+        description=(
+            "True when the page limit was reached before the wallet was fully "
+            "scanned, so holdings and totals may be understated"
+        ),
+    )

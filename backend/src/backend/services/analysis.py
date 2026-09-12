@@ -366,12 +366,19 @@ def run_scenarios(
     Every scenario uses the same seed, so differences between them come from
     the allocation alone and not from sampling noise.
     """
+    current = estimate.stablecoin_ratio
+
     if not estimate.stable_mask.any():
         # Without a stable asset there is nothing to rotate into.
-        ratios = [estimate.stablecoin_ratio]
+        ratios = [current]
     elif ratios is None:
-        current = estimate.stablecoin_ratio
-        ratios = sorted({round(value, 4) for value in [current, 0.2, 0.4, 0.6, 0.8]})
+        # The current ratio is kept exact rather than rounded, so the scenario
+        # that matches the book is recognisable as such below.
+        candidates = [0.2, 0.4, 0.6, 0.8]
+        ratios = sorted(
+            [current]
+            + [value for value in candidates if abs(value - current) > 0.01]
+        )
 
     inputs = build_simulation_inputs(estimate, initial_value)
     config = SimulationConfig(
@@ -386,7 +393,7 @@ def run_scenarios(
         output = simulate_allocation(inputs, config, ratio, estimate.stable_mask)
         name = (
             "Current allocation"
-            if abs(ratio - estimate.stablecoin_ratio) < 1e-6
+            if ratio == current
             else f"{ratio:.0%} stablecoin"
         )
         results.append(

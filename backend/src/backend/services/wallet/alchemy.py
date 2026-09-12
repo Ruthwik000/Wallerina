@@ -53,11 +53,32 @@ def _to_float(value: object) -> float | None:
 
 
 def _usd_price(token: dict) -> float | None:
-    """Read the USD price out of a token's ``tokenPrices`` list."""
-    for price in token.get("tokenPrices") or []:
-        if price.get("currency") == "usd":
-            return _to_float(price.get("value"))
+    """Read the USD price out of a token record.
+
+    Alchemy has shipped this field under more than one key and in more than
+    one shape, so the known variants are all tried rather than trusting a
+    single path. Credit to ``validation.ipynb`` for catching this.
+    """
+    prices = token.get("tokenPrices") or token.get("prices") or []
+    if isinstance(prices, dict):
+        prices = [prices]
+
+    for price in prices:
+        if not isinstance(price, dict):
+            continue
+        currency = str(price.get("currency", "usd")).lower()
+        if currency not in ("usd", "usd_price", ""):
+            continue
+        if (value := _to_float(price.get("value"))) is not None:
+            return value
+
     return None
+
+
+# A balance at or near the uint256 ceiling is not a holding, it is a scam
+# contract advertising itself. Real supplies do not approach this.
+UINT256_MAX = 2**256 - 1
+ABSURD_QUANTITY = Decimal("1e15")
 
 
 def _decode_balance(raw: str | None, decimals: int) -> float | None:
@@ -65,6 +86,7 @@ def _decode_balance(raw: str | None, decimals: int) -> float | None:
 
     Decimal keeps precision for the very large integers these tokens use; the
     result is only converted to float once it is back to a human scale.
+    Structurally impossible balances are rejected outright.
     """
     if not raw:
         return None
@@ -72,16 +94,24 @@ def _decode_balance(raw: str | None, decimals: int) -> float | None:
         integer = int(raw, 16)
     except ValueError:
         return None
-    if integer == 0:
+    if integer == 0 or integer == UINT256_MAX:
         return None
-    return float(Decimal(integer) / (Decimal(10) ** decimals))
+
+    quantity = Decimal(integer) / (Decimal(10) ** decimals)
+    if quantity > ABSURD_QUANTITY:
+        return None
+
+    return float(quantity)
 
 
-async def fetch_token_balances(address: str, networks: list[str] | None = None) -> list[dict]:
+async def fetch_token_balances(
+    address: str, networks: list[str] | None = None
+) -> tuple[list[dict], bool]:
     """Page through Alchemy's tokens-by-address endpoint.
 
-    Returns the raw token records so that filtering and classification stay in
-    one place (``build_portfolio``).
+    Returns the raw token records and whether the scan hit the page limit
+    before exhausting the wallet. Filtering and classification stay in one
+    place (``build_portfolio``).
     """
     settings = get_settings()
     if not settings.alchemy_configured:
@@ -124,16 +154,20 @@ async def fetch_token_balances(address: str, networks: list[str] | None = None) 
         if not page_key:
             break
     else:
+        # Loop exhausted without a break: more pages remain unread.
         logger.warning(
             "Stopped scanning %s after %s pages; wallet has more tokens",
             address,
             settings.portfolio_max_pages,
         )
+        return tokens, True
 
-    return tokens
+    return tokens, False
 
 
-def build_portfolio(address: str, tokens: list[dict]) -> Portfolio:
+def build_portfolio(
+    address: str, tokens: list[dict], truncated: bool = False
+) -> Portfolio:
     """Turn raw Alchemy token records into a classified, priced portfolio."""
     settings = get_settings()
     holdings: list[Holding] = []
@@ -235,12 +269,13 @@ def build_portfolio(address: str, tokens: list[dict]) -> Portfolio:
         chains=chains,
         holdings_scanned=len(tokens),
         holdings_kept=len(holdings),
+        scan_truncated=truncated,
     )
 
 
 async def get_portfolio(address: str, networks: list[str] | None = None) -> Portfolio:
-    tokens = await fetch_token_balances(address, networks)
-    return build_portfolio(address, tokens)
+    tokens, truncated = await fetch_token_balances(address, networks)
+    return build_portfolio(address, tokens, truncated)
 
 
 async def fetch_price_history(

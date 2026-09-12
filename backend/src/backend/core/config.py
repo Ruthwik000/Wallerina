@@ -46,8 +46,11 @@ class Settings(BaseSettings):
 
     # --- Portfolio scanning ----------------------------------------------
     # Heavily airdropped wallets return thousands of worthless spam tokens, so
-    # the scan is bounded and dust is dropped before any analysis runs.
-    portfolio_max_pages: int = 5
+    # the scan is bounded and dust is dropped before any analysis runs. Results
+    # are NOT ordered by value, so a low cap silently hides real positions --
+    # 20 pages (2,000 tokens) covers the wallets tested; when it is still not
+    # enough the portfolio reports scan_truncated.
+    portfolio_max_pages: int = 20
     portfolio_min_usd_value: float = 1.0
 
     # --- Quantitative defaults -------------------------------------------
