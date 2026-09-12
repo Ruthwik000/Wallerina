@@ -53,38 +53,61 @@ def log_returns(prices: np.ndarray) -> np.ndarray:
 
 
 def align_histories(
-    histories: dict[str, list[float]], min_coverage: float = 0.6
+    histories: dict[str, list[tuple[str, float]]], min_coverage: float = 0.6
 ) -> tuple[ReturnMatrix, list[str]]:
-    """Build a return matrix from per-symbol price series.
+    """Build a return matrix from timestamped price series.
 
-    Series differ in length because tokens are listed at different times. They
-    are right-aligned on the most recent observations, but aligning naively on
-    the shortest series would let one recently listed token discard months of
-    history for every other asset. Series covering less than ``min_coverage``
-    of the longest are therefore dropped instead, and returned to the caller so
-    the omission can be reported.
+    Alignment is by **timestamp**, never by position. Providers drop the
+    occasional day for thinly traded tokens, and aligning by index would slide
+    one series against another from that point on -- which silently destroys
+    the correlation estimate the simulator depends on, without any visible
+    error.
+
+    Series differ in length because tokens are listed at different times, so
+    those covering less than ``min_coverage`` of the longest history are
+    dropped rather than truncating every other asset down to their length.
+    Dropped symbols are returned so the omission can be reported.
     """
-    series = {
-        symbol: log_returns(np.asarray(prices, dtype=float))
-        for symbol, prices in histories.items()
-    }
-    series = {symbol: values for symbol, values in series.items() if values.size > 0}
+    series: dict[str, dict[str, float]] = {}
+    for symbol, points in histories.items():
+        by_day = {
+            timestamp[:10]: value
+            for timestamp, value in points
+            if value is not None and value > 0
+        }
+        if len(by_day) >= 2:
+            series[symbol] = by_day
 
     if not series:
         return ReturnMatrix(symbols=[], returns=np.empty((0, 0))), []
 
-    longest = max(values.size for values in series.values())
+    longest = max(len(values) for values in series.values())
     threshold = max(int(longest * min_coverage), 2)
 
-    kept = {s: v for s, v in series.items() if v.size >= threshold}
-    dropped = sorted(s for s, v in series.items() if v.size < threshold)
+    kept = {s: v for s, v in series.items() if len(v) >= threshold}
+    dropped = sorted(s for s, v in series.items() if len(v) < threshold)
 
-    if not kept:  # every series is short; fall back to using them all
+    if not kept:  # every series is short; use them all rather than give up
         kept, dropped = series, []
 
-    length = min(values.size for values in kept.values())
+    # Only days on which every retained asset has a price can produce a
+    # comparable cross-section of returns.
+    common_days: set[str] | None = None
+    for values in kept.values():
+        days = set(values)
+        common_days = days if common_days is None else common_days & days
+
+    ordered_days = sorted(common_days or ())
+    if len(ordered_days) < 2:
+        return ReturnMatrix(symbols=[], returns=np.empty((0, 0))), dropped
+
     symbols = sorted(kept)
-    matrix = np.column_stack([kept[symbol][-length:] for symbol in symbols])
+    prices = np.column_stack(
+        [[kept[symbol][day] for day in ordered_days] for symbol in symbols]
+    )
+
+    # Returns are taken down each column of the date-aligned price matrix.
+    matrix = np.diff(np.log(prices), axis=0)
 
     return ReturnMatrix(symbols=symbols, returns=matrix), dropped
 

@@ -135,7 +135,7 @@ def estimate_parameters(
 
     usable: list[Position] = []
     excluded: list[str] = []
-    price_series: dict[str, list[float]] = {}
+    price_series: dict[str, list[tuple[str, float]]] = {}
 
     for position in positions:
         history = histories.get(position.symbol)
@@ -143,7 +143,9 @@ def estimate_parameters(
             excluded.append(position.symbol)
             continue
         usable.append(position)
-        price_series[position.symbol] = [point.value for point in history.points]
+        price_series[position.symbol] = [
+            (point.timestamp, point.value) for point in history.points
+        ]
 
     if not usable:
         raise InsufficientDataError(
