@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Classification from "@/components/Classification";
 import Meter from "@/components/Meter";
 import Panel from "@/components/Panel";
 import Stat from "@/components/Stat";
@@ -79,7 +80,7 @@ export default function AssetExplorer({ holdings, riskAssets }) {
           </span>
         );
       case "classification":
-        return <span className={styles.txType}>{holding.classification}</span>;
+        return <Classification value={holding.classification} />;
       case "quantity":
         return quantity(holding.quantity);
       case "price_usd":
@@ -113,7 +114,7 @@ export default function AssetExplorer({ holdings, riskAssets }) {
       <div className={styles.stackWide}>
         <Panel
           title={`${selected.symbol} detail`}
-          meta={`${selected.chain} · ${selected.classification}`}
+          meta={selected.chain}
         >
           <div className={styles.stack}>
             <div className={styles.dualStat}>
@@ -139,7 +140,9 @@ export default function AssetExplorer({ holdings, riskAssets }) {
               </div>
               <div className={styles.def}>
                 <dt>Classification</dt>
-                <dd>{selected.classification}</dd>
+                <dd>
+                  <Classification value={selected.classification} />
+                </dd>
               </div>
               <div className={styles.def}>
                 <dt>Network</dt>

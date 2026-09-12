@@ -22,21 +22,50 @@ Strictly use only these colors:
 
 The sepia must be **extremely light, desaturated and close to off-white**.
 
-Do **not** use:
-
-* Golden yellow
-* Orange
-* Brown
-* Bronze
-* Amber
-* Cream-yellow
-* Neon colors
-* Blue
-* Purple
-* Green
-* Red
-
 The sepia should visually feel like **aged ivory / warm off-white**, not gold.
+
+### Pigment accents (amended)
+
+Charts and a small number of semantic labels may carry colour. Every accent is
+held near the chroma floor and warm-shifted, so it reads as **dye soaked into
+paper** rather than screen colour — pigment on aged stock, not a dashboard.
+
+Fixed slot order, assigned in sequence, never cycled:
+
+| Slot | Name | Hex |
+|---|---|---|
+| 1 | Verdigris | `#23A59F` |
+| 2 | Madder | `#BA5745` |
+| 3 | Woad | `#5388C2` |
+| 4 | Ochre | `#B18F34` |
+| 5 | Plum | `#985683` |
+| 6 | Celadon | `#66A268` |
+| 7 | Indigo | `#635FA3` |
+| 8 | Sienna | `#BD7138` |
+
+Correlation uses a diverging scale instead — two hues either side of a warm
+neutral (`#302D29`), because the sign of a correlation matters as much as its
+size and an opacity ramp renders `-0.8` and `+0.8` identically.
+
+Reserved semantic marks: stablecoin = verdigris, volatile = sienna,
+unknown = plum, loss = madder, gain = verdigris. These are never reused as a
+series colour.
+
+**Rules that still hold:**
+
+* Colour appears on **data marks and classification labels only**. Grid lines,
+  axes, tick labels, chrome, panels and type stay black and sepia.
+* Still around **85–90% of the application is black or near-black**.
+* No saturated, neon or pure screen colour. Nothing should read as gold.
+* Identity is never carried by colour alone — a legend is always present, and
+  classification always shows the word as well as the mark.
+* Panels carry a **paper film**: one flat warm wash at ~2% over the surface, so
+  pigment and black sit on a single ground.
+
+The palette is validated as a categorical scale against the `#0A0A0A` panel
+surface — lightness band, chroma floor, colour-vision-deficiency separation
+(worst adjacent ΔE 12.4 under deuteranopia), normal-vision floor (21.5) and
+≥3:1 contrast. Re-run the check before changing any value.
 
 ### UI Style
 

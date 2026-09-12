@@ -52,9 +52,9 @@ export default function FanChart({ paths, formatValue = (value) => value.toFixed
         );
       })}
 
-      <path className={styles.area} d={areaPath(p95, p5)} />
-      <path className={styles.areaInner} d={areaPath(p75, p25)} />
-      <path className={styles.line} d={linePath(median)} />
+      <path className={styles.bandOuter} d={areaPath(p95, p5)} />
+      <path className={styles.bandInner} d={areaPath(p75, p25)} />
+      <path className={styles.medianLine} d={linePath(median)} />
 
       <line className={styles.axis} x1={x0} x2={x1} y1={y0} y2={y0} />
 

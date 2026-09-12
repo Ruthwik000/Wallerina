@@ -55,14 +55,14 @@ export default function LineChart({
 
       {area && (
         <path
-          className={styles.area}
+          className={styles.priceArea}
           d={areaPath(points, [
             [x0, y0],
             [x1, y0],
           ])}
         />
       )}
-      <path className={styles.line} d={linePath(points)} />
+      <path className={styles.priceLine} d={linePath(points)} />
 
       <line className={styles.axis} x1={x0} x2={x1} y1={y0} y2={y0} />
 

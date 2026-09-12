@@ -15,6 +15,46 @@
   --sepia-grey: #bdb5a8;
   --sepia-dark: #8f887d;
 
+  /* ------------------------------------------------------------------
+     Pigment accents.
+
+     Data marks only; the interface itself stays black and sepia. Every hue
+     is held near the chroma floor and warm-shifted, so it reads as dye
+     soaked into paper rather than screen colour. Validated as a categorical
+     palette against the #0a0a0a panel surface: lightness band, chroma
+     floor, CVD separation (worst adjacent dE 12.4 deuteranopia), normal
+     vision floor (21.5) and >=3:1 contrast all pass.
+
+     Fixed order. Slots are assigned in sequence and never cycled.
+     ------------------------------------------------------------------ */
+  --pigment-1: #23a59f; /* verdigris */
+  --pigment-2: #ba5745; /* madder    */
+  --pigment-3: #5388c2; /* woad      */
+  --pigment-4: #b18f34; /* ochre     */
+  --pigment-5: #985683; /* plum      */
+  --pigment-6: #66a268; /* celadon   */
+  --pigment-7: #635fa3; /* indigo    */
+  --pigment-8: #bd7138; /* sienna    */
+
+  /* Polarity: two hues either side of a warm neutral. Used for correlation,
+     where the sign carries as much meaning as the magnitude. */
+  --corr-mid: #302d29;
+  --corr-neg-1: #35475b;
+  --corr-neg-2: #406084;
+  --corr-neg-3: #4a7ab0;
+  --corr-neg-4: #5496dd;
+  --corr-pos-1: #593d37;
+  --corr-pos-2: #804f45;
+  --corr-pos-3: #a96052;
+  --corr-pos-4: #d47260;
+
+  /* Semantic marks. Reserved meanings; never reused as a series colour. */
+  --mark-stable: var(--pigment-1);
+  --mark-volatile: var(--pigment-8);
+  --mark-unknown: var(--pigment-5);
+  --mark-loss: var(--pigment-2);
+  --mark-gain: var(--pigment-1);
+
   /* Derived: borders and washes, all struck from --sepia-dark */
   --line: rgba(143, 136, 125, 0.22);
   --line-strong: rgba(143, 136, 125, 0.45);

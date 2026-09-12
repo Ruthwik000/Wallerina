@@ -1,0 +1,41 @@
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-grey);
+}
+
+/* A 2px square rather than a dot — the geometry stays sharp. */
+.mark {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--sepia-dark);
+}
+
+.stablecoin .mark {
+  background: var(--mark-stable);
+}
+
+.volatile .mark {
+  background: var(--mark-volatile);
+}
+
+.unknown .mark {
+  background: var(--mark-unknown);
+}
+
+.stablecoin {
+  color: color-mix(in srgb, var(--mark-stable) 55%, var(--sepia-light));
+}
+
+.volatile {
+  color: color-mix(in srgb, var(--mark-volatile) 45%, var(--sepia-light));
+}
+
+.unknown {
+  color: color-mix(in srgb, var(--mark-unknown) 50%, var(--sepia-light));
+}

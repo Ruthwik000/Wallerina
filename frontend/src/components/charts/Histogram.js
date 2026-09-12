@@ -30,11 +30,11 @@ export default function Histogram({ bins, threshold, markers = [], formatValue }
     >
       {bins.map((bin, index) => {
         const height = scale(bin.count, [0, maxCount], [0, y0 - y1]);
-        const muted = threshold != null && bin.to <= threshold;
+        const isLoss = threshold != null && bin.to <= threshold;
         return (
           <rect
             key={bin.from}
-            className={muted ? styles.barMuted : styles.bar}
+            className={isLoss ? styles.barLoss : styles.barGain}
             x={x0 + slot * index + 1}
             y={y0 - height}
             width={Math.max(slot - 2, 1)}

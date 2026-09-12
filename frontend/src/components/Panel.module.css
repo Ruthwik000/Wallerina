@@ -4,6 +4,21 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative;
+  isolation: isolate;
+}
+
+/* The paper film. A single faint warm wash laid over the whole surface, so
+   the pigment marks and the black around them sit on one ground instead of
+   looking like colour pasted onto a screen. Beneath the content, never over
+   it, and far too subtle to lift the interface off near-black. */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: rgba(232, 224, 210, 0.022);
 }
 
 .header {

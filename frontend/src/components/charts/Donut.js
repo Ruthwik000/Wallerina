@@ -4,12 +4,21 @@ const SIZE = 220;
 const RADIUS = 88;
 const THICKNESS = 26;
 
-/* Opacity ramp keeps every slice on the same sepia, differentiated by weight
-   rather than by hue — the palette allows no second colour. */
-function sliceOpacity(index, total) {
-  const top = 0.92;
-  const bottom = 0.2;
-  return top - ((top - bottom) * index) / Math.max(total - 1, 1);
+/* Fixed slot order, assigned in sequence and never cycled. A ninth holding
+   folds into "Other" rather than inventing a hue. */
+const PIGMENTS = [
+  "var(--pigment-1)",
+  "var(--pigment-2)",
+  "var(--pigment-3)",
+  "var(--pigment-4)",
+  "var(--pigment-5)",
+  "var(--pigment-6)",
+  "var(--pigment-7)",
+  "var(--pigment-8)",
+];
+
+function slotColor(index) {
+  return PIGMENTS[index] ?? "var(--sepia-dark)";
 }
 
 function arc(startAngle, endAngle) {
@@ -61,9 +70,12 @@ export default function Donut({ segments, caption, captionLabel }) {
             <path
               key={segment.symbol}
               d={arc(start, Math.max(end - 0.012, start))}
-              fill="var(--sepia-light)"
-              fillOpacity={sliceOpacity(index, segments.length)}
-            />
+              fill={slotColor(index)}
+              stroke="var(--deep-black)"
+              strokeWidth="2"
+            >
+              <title>{`${segment.symbol}: ${segment.weight.toFixed(1)}%`}</title>
+            </path>
           );
         })}
         {caption && (
@@ -83,7 +95,7 @@ export default function Donut({ segments, caption, captionLabel }) {
           <li key={segment.symbol} className={styles.donutLegendRow}>
             <span
               className={styles.swatch}
-              style={{ opacity: sliceOpacity(index, segments.length) }}
+              style={{ background: slotColor(index) }}
             />
             <span className={styles.donutSymbol}>{segment.symbol}</span>
             <span className={styles.donutWeight}>{segment.weight.toFixed(1)}%</span>

@@ -196,3 +196,80 @@
   color: var(--pitch-black);
   font-weight: 600;
 }
+
+/* --------------------------------------------------------------------------
+   Pigment marks
+
+   Colour is carried by the data marks only. Grid, axes and tick labels stay
+   in sepia ink so the accents never compete with the chrome.
+   -------------------------------------------------------------------------- */
+
+/* Realised price history — one series, so one hue and no legend box. */
+.priceLine {
+  fill: none;
+  stroke: var(--pigment-1);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+
+.priceArea {
+  fill: color-mix(in srgb, var(--pigment-1) 14%, transparent);
+  stroke: none;
+}
+
+/* Simulated outcomes — the median path, with its percentile bands beneath. */
+.medianLine {
+  fill: none;
+  stroke: var(--pigment-3);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.bandInner {
+  fill: color-mix(in srgb, var(--pigment-3) 26%, transparent);
+  stroke: none;
+}
+
+.bandOuter {
+  fill: color-mix(in srgb, var(--pigment-3) 11%, transparent);
+  stroke: none;
+}
+
+/* Terminal-value distribution: paths finishing below today are a different
+   outcome, not a fainter one. */
+.barGain {
+  fill: color-mix(in srgb, var(--mark-gain) 62%, transparent);
+}
+
+.barLoss {
+  fill: color-mix(in srgb, var(--mark-loss) 62%, transparent);
+}
+
+/* Legend for the correlation scale — polarity is never left to colour alone. */
+.scale {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.scaleRamp {
+  display: flex;
+  flex: none;
+}
+
+.scaleStep {
+  width: 22px;
+  height: 10px;
+}
+
+.scaleLabel {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sepia-dark);
+}
