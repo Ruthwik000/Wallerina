@@ -15,6 +15,7 @@ from backend.models.goal import GoalType
 from backend.models.market import MarketStress
 from backend.models.quant import RiskMetrics, SimulationResult
 from backend.services import analysis
+from backend.services.http import UpstreamError
 from tests.test_allocation import decide
 
 WALLET = "0x" + "a" * 40
@@ -22,7 +23,7 @@ WALLET = "0x" + "a" * 40
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("RDS_HOST", "")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -104,58 +105,112 @@ class TestAgentsJudgeAgainstTheGoal:
         assert drawdown_severity(cautious) == "high"
 
 
-class TestPipelinePropagation:
+@pytest.fixture
+def graph_services(monkeypatch):
+    """Stub every service the graph touches; records what each agent saw."""
+    seen: dict[str, object] = {"horizons": [], "load_calls": 0}
+
+    portfolio = SimpleNamespace(stablecoin_ratio=0.1, concentration=0.5, model_dump=lambda **_: {})
+    estimate = SimpleNamespace(
+        correlation=[[1.0, 0.8], [0.8, 1.0]],
+        stable_mask=np.array([False, False]),
+        total_value=10_000.0,
+    )
+
+    async def load_estimate(address):
+        seen["load_calls"] += 1
+        return portfolio, estimate
+
+    async def load_market_stress(_):
+        return MarketStress.model_construct(available=False, score=0.0)
+
+    def run_simulation(*args, horizon_days, **kwargs):
+        seen["horizons"].append(horizon_days)
+        return _simulation(0.1)
+
+    monkeypatch.setattr(analysis, "load_estimate", load_estimate)
+    monkeypatch.setattr(analysis, "load_market_stress", load_market_stress)
+    monkeypatch.setattr(analysis, "compute_risk", lambda *a: _risk())
+    monkeypatch.setattr(analysis, "run_simulation", run_simulation)
+    decision = decide()  # built before allocation.decide is patched below
+
+    def spy_decide(**kwargs):
+        seen["rules"] = kwargs["rules"]
+        return decision
+
+    monkeypatch.setattr(pipeline.allocation, "decide", spy_decide)
+    monkeypatch.setattr(telemetry, "record_recommendation", lambda *a: None)
+
+    def spy(name):
+        def agent(context, *args):
+            seen[name] = context
+            return AgentReport(agent=name, headline="", findings=[])
+
+        return agent
+
+    async def explain(context, decision, reports):
+        seen["judgement"] = context
+        seen["reports"] = reports
+        return Judgement(summary="s", reasoning=["r"], caveats=["c"], used_model=False)
+
+    monkeypatch.setattr(analysts, "analyse_wallet", spy("wallet"))
+    monkeypatch.setattr(analysts, "analyse_market", spy("market"))
+    monkeypatch.setattr(analysts, "analyse_stablecoins", spy("stablecoin"))
+    monkeypatch.setattr(judgement, "explain", explain)
+    seen["load_estimate"] = load_estimate
+    return seen
+
+
+class TestPipelineGraph:
     @pytest.mark.asyncio
-    async def test_every_agent_receives_the_same_context(self, monkeypatch):
-        seen: dict[str, object] = {}
-        horizons: list[int] = []
+    async def test_a_crashing_analysis_agent_degrades_the_run(self, monkeypatch, graph_services):
+        def broken(*args):
+            raise RuntimeError("boom")
 
-        portfolio = SimpleNamespace(stablecoin_ratio=0.1, concentration=0.5, model_dump=lambda **_: {})
-        estimate = SimpleNamespace(
-            correlation=[[1.0, 0.8], [0.8, 1.0]],
-            stable_mask=np.array([False, False]),
-            total_value=10_000.0,
-        )
+        monkeypatch.setattr(analysts, "analyse_stablecoins", broken)
 
-        async def load_estimate(address):
-            return portfolio, estimate
+        result = await pipeline.recommend(WALLET, "balanced")
 
-        async def load_market_stress(_):
-            return MarketStress.model_construct(available=False, score=0.0)
+        assert [r.agent for r in result.reports] == ["wallet", "market", "stablecoin"]
+        assert result.reports[2].headline == "Analysis unavailable"
+        assert result.warnings == ["stablecoin agent failed: boom"]
+        assert graph_services["judgement"] is not None, "the explanation still ran"
 
-        def run_simulation(*args, horizon_days, **kwargs):
-            horizons.append(horizon_days)
-            return _simulation(0.1)
+    @pytest.mark.asyncio
+    async def test_upstream_failures_are_retried(self, monkeypatch, graph_services):
+        succeed = graph_services["load_estimate"]
+        attempts = {"n": 0}
 
-        monkeypatch.setattr(analysis, "load_estimate", load_estimate)
-        monkeypatch.setattr(analysis, "load_market_stress", load_market_stress)
-        monkeypatch.setattr(analysis, "compute_risk", lambda *a: _risk())
-        monkeypatch.setattr(analysis, "run_simulation", run_simulation)
-        decision = decide()  # built before allocation.decide is patched below
+        async def flaky(address):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise UpstreamError("alchemy", "rate limited", 429)
+            return await succeed(address)
 
-        def spy_decide(**kwargs):
-            seen["rules"] = kwargs["rules"]
-            return decision
+        monkeypatch.setattr(analysis, "load_estimate", flaky)
 
-        monkeypatch.setattr(pipeline.allocation, "decide", spy_decide)
-        monkeypatch.setattr(telemetry, "record_recommendation", lambda *a: None)
+        result = await pipeline.recommend(WALLET, "balanced")
 
-        def spy(name):
-            def agent(context, *args):
-                seen[name] = context
-                return AgentReport(agent=name, headline="", findings=[])
+        assert attempts["n"] == 2
+        assert result.warnings == []
 
-            return agent
+    @pytest.mark.asyncio
+    async def test_data_errors_are_not_retried(self, monkeypatch, graph_services):
+        attempts = {"n": 0}
 
-        async def explain(context, decision, reports):
-            seen["judgement"] = context
-            return Judgement(summary="s", reasoning=["r"], caveats=["c"], used_model=False)
+        async def empty(address):
+            attempts["n"] += 1
+            raise analysis.InsufficientDataError("no priced holdings")
 
-        monkeypatch.setattr(analysts, "analyse_wallet", spy("wallet"))
-        monkeypatch.setattr(analysts, "analyse_market", spy("market"))
-        monkeypatch.setattr(analysts, "analyse_stablecoins", spy("stablecoin"))
-        monkeypatch.setattr(judgement, "explain", explain)
+        monkeypatch.setattr(analysis, "load_estimate", empty)
 
+        with pytest.raises(analysis.InsufficientDataError):
+            await pipeline.recommend(WALLET, "balanced")
+        assert attempts["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_every_agent_receives_the_same_context(self, graph_services):
+        seen = graph_services
         result = await pipeline.recommend(WALLET, "Preserve capital", horizon_days=45)
 
         context = seen["wallet"]
@@ -163,6 +218,6 @@ class TestPipelinePropagation:
         assert seen["stablecoin"] is context
         assert seen["judgement"] is context
         assert seen["rules"] is context.rules, "the allocation engine uses the context's rules"
-        assert horizons == [45], "the simulator runs on the context's horizon"
+        assert seen["horizons"] == [45], "the simulator runs on the context's horizon"
         assert result.rules == context.rules
         assert result.goal == "Preserve capital"

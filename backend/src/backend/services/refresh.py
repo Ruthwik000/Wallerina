@@ -1,13 +1,13 @@
-"""Periodic data refresh — the every-15-minutes job.
+"""Periodic data refresh — the every-5-minutes job.
 
-Runs inside the API process. Every REFRESH_INTERVAL_MINUTES (default 15) it:
+Runs inside the API process. Every REFRESH_INTERVAL_MINUTES (default 5) it:
 
 * re-caches price history for the core assets in S3,
 * refreshes Polymarket data into S3, and
 * snapshots every wallet the database tracks (portfolio and risk metrics).
 
 The same three jobs exist as Lambda handlers in ``aws/handlers.py`` for an
-EventBridge ``rate(15 minutes)`` schedule. When they run there, set
+EventBridge ``rate(5 minutes)`` schedule. When they run there, set
 REFRESH_ENABLED=false so the work is not done twice.
 """
 

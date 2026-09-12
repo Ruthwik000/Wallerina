@@ -14,7 +14,7 @@ from backend.services import refresh
 
 @pytest.fixture(autouse=True)
 def no_database(monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv("RDS_HOST", "")
     get_settings.cache_clear()
     database._memory_goals.clear()
     yield
@@ -45,20 +45,6 @@ class TestGoals:
     @pytest.mark.asyncio
     async def test_unknown_wallet_has_no_goal(self):
         assert await database.get_goal("0x0000000000000000000000000000000000000009") is None
-
-
-class TestDsn:
-    @pytest.mark.parametrize(
-        "url, expected",
-        [
-            ("postgresql+psycopg2://u:p@h:5432/db", "postgresql://u:p@h:5432/db"),
-            ("postgresql+asyncpg://u:p@h/db", "postgresql://u:p@h/db"),
-            ("  postgresql://u:p@h/db  ", "postgresql://u:p@h/db"),
-            ("postgres://u:p@h/db", "postgres://u:p@h/db"),
-        ],
-    )
-    def test_driver_suffix_is_removed(self, url, expected):
-        assert database.normalise_dsn(url) == expected
 
 
 class TestRefresh:

@@ -11,9 +11,9 @@ and calls the same service code the API uses. Nothing here reimplements engine
 logic, so a scheduled refresh and an interactive request cannot drift apart.
 
 Suggested EventBridge schedules (matching the in-app refresh, services/refresh.py):
-    refresh_market_data     rate(15 minutes)
-    refresh_prediction_data rate(15 minutes)
-    snapshot_portfolios     rate(15 minutes)
+    refresh_market_data     rate(5 minutes)
+    refresh_prediction_data rate(5 minutes)
+    snapshot_portfolios     rate(5 minutes)
 
 The async bodies also run inside the API process on the same interval, so the
 shared HTTP client is only shut down by the call that started it.

@@ -77,6 +77,10 @@ class Recommendation(BaseModel):
     reports: list[AgentReport]
     judgement: Judgement | None = None
     trades: list["Trade"] = Field(default_factory=list)
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Agents that failed and were degraded rather than failing the run",
+    )
 
 
 class Trade(BaseModel):

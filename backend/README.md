@@ -249,7 +249,7 @@ src/backend/
   no GARCH, no implied volatility, no jumps or fat tails. Real crypto returns
   are more extreme than a lognormal, so tail estimates are, if anything,
   optimistic.
-* **Persistence needs RDS.** Without `DATABASE_URL` nothing is stored, so the
+* **Persistence needs RDS.** Without `RDS_HOST` nothing is stored, so the
   recommendation log and history endpoint are empty. The schema is created
   automatically on boot when a database is configured.
 * **Only part of the AWS layer is verified live.** S3 (put/get), SQS

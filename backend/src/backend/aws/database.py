@@ -7,12 +7,20 @@ This also satisfies the backend specification's requirement to log every
 recommendation with the inputs that produced it — a recommendation that cannot
 be reconstructed later cannot be audited.
 
-Connection is lazy and entirely optional: with no DATABASE_URL the application
+Connection is lazy and entirely optional: with no RDS_HOST the application
 runs exactly as before, minus persistence.
+
+Authentication is AWS IAM, never a password. Aurora IAM tokens expire after 15
+minutes, so a token is not generated once and reused: the pool's ``connect``
+hook generates a fresh one immediately before each new physical connection.
+Connections already open stay valid past the token's expiry, because the token
+is only checked when a connection authenticates.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 from datetime import UTC, datetime
@@ -29,7 +37,11 @@ try:
 except ImportError:  # pragma: no cover
     ASYNCPG_AVAILABLE = False
 
+import boto3
+
 _pool: Any = None
+# Why the last pool creation failed, for the database health check.
+_last_error: str | None = None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS wallets (
@@ -102,41 +114,114 @@ CREATE TABLE IF NOT EXISTS wallet_goals (
 _memory_goals: dict[str, dict] = {}
 
 
-def normalise_dsn(url: str) -> str:
-    """Accept SQLAlchemy-style URLs (postgresql+psycopg2://) for asyncpg.
+@functools.lru_cache(maxsize=1)
+def _rds_client():
+    """The boto3 RDS client used to sign IAM tokens.
 
-    asyncpg only understands the plain postgresql:// scheme, but URLs copied
-    from ORMs and tutorials often carry a driver suffix.
+    Deliberately built from the default credential chain (environment, shared
+    ~/.aws config, or the ECS task role in production), not from the AWS_* key
+    settings. The chain's credentials refresh themselves, so a long-running
+    task keeps signing valid tokens when its role credentials rotate.
     """
-    url = url.strip()
-    scheme, separator, rest = url.partition("://")
-    if separator and "+" in scheme:
-        scheme = scheme.split("+", 1)[0]
-    return f"{scheme}{separator}{rest}"
+    settings = get_settings()
+    session = boto3.Session(profile_name=settings.aws_profile or None)
+    return session.client("rds", region_name=settings.aws_region)
+
+
+def generate_auth_token() -> str:
+    """A fresh IAM authentication token for the configured database user.
+
+    Signed locally with the current AWS credentials; valid for 15 minutes.
+    Never log the return value: it is a password.
+    """
+    settings = get_settings()
+    return _rds_client().generate_db_auth_token(
+        DBHostname=settings.rds_host,
+        Port=settings.rds_port,
+        DBUsername=settings.rds_user,
+    )
+
+
+async def _iam_connect(*args, **kwargs):
+    """The pool's connect hook: runs for every new physical connection.
+
+    The token is generated here, immediately before connecting, so it is never
+    older than a few milliseconds when Aurora checks it. Signing may read
+    credentials from the ECS metadata endpoint, so it runs off the event loop.
+    """
+    kwargs["password"] = await asyncio.to_thread(generate_auth_token)
+    return await asyncpg.connect(*args, **kwargs)
 
 
 async def pool():
     """Lazily create the connection pool, or return None if unconfigured."""
-    global _pool
+    global _pool, _last_error
     settings = get_settings()
 
-    if not settings.database_url or not ASYNCPG_AVAILABLE:
+    if not settings.database_configured or not ASYNCPG_AVAILABLE:
         return None
 
     if _pool is None:
         try:
             _pool = await asyncpg.create_pool(
-                normalise_dsn(settings.database_url),
+                host=settings.rds_host,
+                port=settings.rds_port,
+                database=settings.rds_database,
+                user=settings.rds_user,
+                ssl="require",
                 min_size=1,
                 max_size=settings.database_pool_size,
                 command_timeout=15,
+                # Idle connections are closed after five minutes; the next one
+                # opened goes through _iam_connect and gets a new token.
+                max_inactive_connection_lifetime=300.0,
+                connect=_iam_connect,
             )
-            logger.info("Connected to PostgreSQL")
+            _last_error = None
+            logger.info(
+                "Connected to PostgreSQL at %s as %s (IAM auth)",
+                settings.rds_host,
+                settings.rds_user,
+            )
         except Exception as error:
-            logger.warning("Database unavailable: %s", error)
+            _last_error = f"{type(error).__name__}: {error}"
+            logger.warning("Database unavailable: %s", _last_error)
             return None
 
     return _pool
+
+
+async def check() -> dict:
+    """Connect and ask the database who we are: the connectivity health check."""
+    settings = get_settings()
+    result: dict = {
+        "configured": settings.database_configured,
+        "auth": "iam",
+        "host": settings.rds_host or None,
+        "connected": False,
+    }
+
+    connection_pool = await pool()
+    if connection_pool is None:
+        result["error"] = (
+            _last_error
+            if settings.database_configured
+            else "RDS_HOST, RDS_DATABASE and RDS_USER are not all set"
+        )
+        return result
+
+    try:
+        async with connection_pool.acquire() as connection:
+            row = await connection.fetchrow("SELECT current_user, current_database()")
+        result.update(
+            connected=True,
+            current_user=row["current_user"],
+            current_database=row["current_database"],
+        )
+    except Exception as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+
+    return result
 
 
 async def migrate() -> bool:

@@ -100,6 +100,12 @@ async def health() -> dict:
     }
 
 
+@app.get("/health/database")
+async def database_health() -> dict:
+    """Connect to RDS with IAM auth and run SELECT current_user, current_database()."""
+    return await database.check()
+
+
 @app.get("/api/portfolio/{address}", response_model=Portfolio)
 async def get_portfolio(address: str) -> Portfolio:
     """Classified, priced holdings for a wallet across supported networks."""

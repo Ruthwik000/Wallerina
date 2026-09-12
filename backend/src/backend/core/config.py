@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     # Polymarket data in S3 and snapshots tracked wallets (services/refresh.py).
     # Turn off when the same jobs run on an EventBridge schedule instead.
     refresh_enabled: bool = True
-    refresh_interval_minutes: int = 15
+    refresh_interval_minutes: int = 5
     refresh_snapshots: bool = True
 
     # --- Model (NVIDIA NIM) -----------------------------------------------
@@ -122,13 +122,16 @@ class Settings(BaseSettings):
     # CloudWatch — custom metrics (logs arrive via stdout under ECS/Lambda).
     cloudwatch_enabled: bool = False
 
-    # RDS PostgreSQL.
-    database_url: str = ""
+    # RDS / Aurora PostgreSQL, authenticated with IAM tokens (no password).
+    rds_host: str = ""
+    rds_port: int = 5432
+    rds_database: str = ""
+    rds_user: str = ""
     database_pool_size: int = 5
 
     @property
     def database_configured(self) -> bool:
-        return bool(self.database_url)
+        return bool(self.rds_host and self.rds_database and self.rds_user)
 
     @property
     def alchemy_configured(self) -> bool:
