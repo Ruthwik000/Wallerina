@@ -16,6 +16,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from backend.core.config import get_settings
+from backend.agents import llm, pipeline
+from backend.aws import database, secrets
+from backend.models.agents import Recommendation
 from backend.models.chat import ChatRequest
 from backend.models.market import AssetPredictionMarkets, MarketStress, PriceHistory
 from backend.models.portfolio import Portfolio
@@ -37,11 +40,15 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Secrets Manager first: it may supply the API keys everything else needs.
+    secrets.load_into_environment()
     await http.startup()
+    await database.migrate()
     try:
         yield
     finally:
         await http.shutdown()
+        await database.close()
 
 
 app = FastAPI(
@@ -77,7 +84,9 @@ async def health() -> dict:
     return {
         "status": "ok",
         "alchemy_configured": settings.alchemy_configured,
-        "chat_configured": settings.chat_configured,
+        "model": llm.describe(),
+        "aws_enabled": settings.aws_enabled,
+        "database_configured": settings.database_configured,
         "networks": settings.alchemy_networks,
     }
 
@@ -259,6 +268,40 @@ async def full_analysis(
         raise _handle(error) from error
 
 
+@app.get("/api/recommendation/{address}", response_model=Recommendation)
+async def get_recommendation(
+    address: str,
+    goal: str = Query(
+        default="balanced",
+        description=(
+            "A preset ('balanced', 'preserve capital', 'grow steadily', ...) or "
+            "free text. Presets are resolved from a table with no model call."
+        ),
+    ),
+    horizon_days: int | None = Query(default=None, ge=1, le=1095),
+    explain: bool = Query(
+        default=True, description="Run the judgement agent over the decision"
+    ),
+) -> Recommendation:
+    """Run the full agent pipeline and return a recommendation.
+
+    The allocation is computed deterministically; the judgement agent only
+    explains it.
+    """
+    try:
+        return await pipeline.recommend(
+            address, goal, horizon_days=horizon_days, explain=explain
+        )
+    except Exception as error:
+        raise _handle(error) from error
+
+
+@app.get("/api/recommendation/{address}/history")
+async def recommendation_history(address: str, limit: int = Query(default=10, ge=1, le=50)) -> list[dict]:
+    """Past recommendations for this wallet. Empty without a database."""
+    return await database.recent_recommendations(address, limit)
+
+
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest) -> StreamingResponse:
     """Stream an answer about the wallet as server-sent events.
@@ -268,10 +311,13 @@ async def chat_endpoint(request: ChatRequest) -> StreamingResponse:
     numbers rather than producing its own.
     """
     settings = get_settings()
-    if not settings.chat_configured:
+    if not llm.configured():
         raise HTTPException(
             status_code=503,
-            detail="ANTHROPIC_API_KEY is not set, so the portfolio chat is unavailable",
+            detail=(
+                "No model provider is configured. Set LLM_PROVIDER=bedrock with "
+                "AWS_ENABLED=true, or LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY."
+            ),
         )
 
     try:

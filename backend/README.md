@@ -39,6 +39,9 @@ uv run pytest             # 89 tests
 | POST | `/api/simulate` | Monte Carlo over the wallet's holdings |
 | POST | `/api/simulate/scenarios` | Compare stablecoin ratios on identical draws |
 | GET  | `/api/analysis/{address}` | Portfolio + risk + stress + simulation in one pass |
+| GET  | `/api/recommendation/{address}` | Full agent pipeline → allocation + explanation |
+| GET  | `/api/recommendation/{address}/history` | Past recommendations (needs RDS) |
+| POST | `/api/chat` | Streaming portfolio Q&A (SSE) |
 
 ## Upstream APIs
 
@@ -125,6 +128,100 @@ within 1-2%. It also asserts the properties the product depends on — a
 correlated book has a worse 5th percentile than an independent one, and expected
 drawdown falls monotonically as the stablecoin ratio rises.
 
+## Model provider
+
+Inference runs on **Amazon Bedrock** by default (`agents/llm.py`), alongside
+the rest of the AWS stack.
+
+Bedrock authenticates through the same IAM credential chain as S3, SQS and RDS,
+so on ECS the task role covers it and **there is no API key to store, rotate or
+leak** — the `ANTHROPIC_API_KEY` row disappears from the deployment. Usage lands
+in AWS billing and CloudWatch with everything else.
+
+SageMaker was the alternative and is the wrong shape: it hosts models you bring,
+which would mean paying for a GPU endpoint around the clock to run two short
+text tasks per analysis. Bedrock is inference-as-an-API with no capacity to
+manage.
+
+`LLM_PROVIDER=anthropic` switches to the first-party API for local work without
+an AWS account. Both are the same SDK, so prompts, structured outputs and error
+handling are identical — only the client and the model id differ (Bedrock
+namespaces ids as `anthropic.claude-opus-5`).
+
+Required IAM permissions: `bedrock:InvokeModel`,
+`bedrock:InvokeModelWithResponseStream`. Claude model access must also be
+enabled once per account in the Bedrock console, and availability is
+region-specific — hence the separate `BEDROCK_REGION`.
+
+### Why not Bedrock Agents / AgentCore
+
+Bedrock's agent frameworks orchestrate tool use by letting the *model* decide
+what to call and in what order. That is the opposite of what this system needs.
+Specification section 2 requires the quantitative engine to decide the
+allocation and the model only to explain it; handing orchestration to a
+model-driven framework would put the model back in the decision path. The
+pipeline here is deterministic control flow that calls a model twice, for the
+two genuinely linguistic jobs, and that boundary is the design.
+
+## Agents
+
+The pipeline is `goal → rules → analysis → risk → simulation → allocation →
+explanation`. Only two steps call a model:
+
+| Step | Module | Model? |
+|---|---|---|
+| Goal / intent | `agents/goal.py` | Only for free text — presets resolve from a table |
+| Wallet analysis | `agents/analysts.py` | No |
+| Market analysis | `agents/analysts.py` | No |
+| Stablecoin risk | `agents/analysts.py` | No |
+| **Allocation** | `quant/allocation.py` | **Never** |
+| Judgement | `agents/judgement.py` | Yes — explanation only |
+
+Specification section 2 is the constraint that shapes this: the LLM must not
+invent portfolio percentages. The allocation engine computes the target; the
+judgement agent receives it and explains it. The prompt forbids restating any
+figure not in its brief, and the target ratio is written into the response by
+code rather than parsed from the reply, so a hallucinated number cannot reach
+the user.
+
+Every adjustment the engine makes is recorded as a named, bounded
+`AllocationDriver`, and a test asserts the drivers sum to the decision — if
+they didn't, the explanation would be a fiction.
+
+The analysis agents are deterministic on purpose. No model call is needed to
+observe that two assets correlate at 0.9, and using one would add latency, cost
+and variance to a fact.
+
+**With no provider configured** preset goals still work and explanations fall
+back to a deterministic write-up assembled from the same drivers. Only
+free-text goal parsing and model-written prose are lost.
+
+## AWS
+
+Every service in `docs/aws/aws_usage.md`, and every one is **optional** — with
+`AWS_ENABLED=false` the application behaves exactly as it did before AWS
+existed. Tests assert that degradation.
+
+| Service | Module | Role |
+|---|---|---|
+| Bedrock | `agents/llm.py` | Model inference for the goal and judgement agents |
+| ECS / Fargate | `Dockerfile` | Container image; non-root, healthchecked |
+| RDS (PostgreSQL) | `aws/database.py` | Snapshots, risk metrics, simulations, recommendation log |
+| S3 | `aws/storage.py` | Historical price series and portfolio snapshots |
+| Lambda | `aws/handlers.py` | Scheduled refresh jobs and the simulation worker |
+| EventBridge | `aws/handlers.py` | Schedules documented per handler |
+| SQS | `aws/queue.py` | Queues heavy Monte Carlo runs off the request path |
+| Secrets Manager | `aws/secrets.py` | Supplies API keys; environment still wins |
+| CloudWatch | `aws/telemetry.py` | Custom metrics; logs arrive via stdout |
+
+Credentials resolve through the standard boto3 chain, so on ECS you leave the
+key fields blank and the task role is used. `AWS_ENDPOINT_URL` points the whole
+stack at LocalStack for local testing.
+
+Interactive simulations stay inline; only runs above
+`SIMULATION_QUEUE_THRESHOLD` (paths × horizon) are queued — offloading a
+5,000-path run would add latency rather than remove it.
+
 ## Layout
 
 ```
@@ -138,9 +235,17 @@ src/backend/
     wallet/alchemy.py         Balances, prices, price history
     polymarket/client.py      Prediction markets and stress signal
     analysis.py               Orchestration: wallet -> prices -> risk -> simulation
+    chat.py                   Portfolio Q&A agent (streaming, with a sim tool)
+  agents/
+    goal.py                   Goal/intent layer: preset table + LLM for free text
+    analysts.py               Wallet, market and stablecoin analysis (deterministic)
+    judgement.py              Explains the allocation; never chooses it
+    pipeline.py               Runs the whole flow end to end
   quant/
     risk.py                   Returns, volatility, correlation, VaR, drawdown
     monte_carlo.py            Correlated GBM simulation engine
+    allocation.py             Deterministic allocation engine
+  aws/                        One module per documented AWS service
 ```
 
 ## Known limitations
@@ -158,5 +263,14 @@ src/backend/
   no GARCH, no implied volatility, no jumps or fat tails. Real crypto returns
   are more extreme than a lognormal, so tail estimates are, if anything,
   optimistic.
-* **No persistence.** Nothing is stored, so section 4's requirement to log every
-  recommendation with its inputs is not yet met.
+* **Persistence needs RDS.** Without `DATABASE_URL` nothing is stored, so the
+  recommendation log and history endpoint are empty. The schema is created
+  automatically on boot when a database is configured.
+* **The AWS layer is untested against real AWS.** It is written to the boto3
+  and Bedrock APIs and covered by unit tests, but no account was available, so
+  no live Bedrock call has been made. Client construction, region resolution
+  and model-id namespacing are verified; the inference round-trip is not.
+* **Allocation constants are calibrated by judgement, not fitted.** The
+  reference volatility, sensitivities and caps in `quant/allocation.py` are
+  reasoned defaults; they have not been backtested against historical
+  outcomes.

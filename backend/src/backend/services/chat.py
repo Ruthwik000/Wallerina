@@ -20,6 +20,7 @@ from typing import Any
 
 import anthropic
 
+from backend.agents import llm
 from backend.core.config import get_settings
 from backend.models.portfolio import Portfolio
 from backend.models.quant import RiskMetrics, SimulationResult
@@ -96,13 +97,14 @@ class ChatUnavailableError(RuntimeError):
     """The chat agent is not configured."""
 
 
-def _client() -> anthropic.AsyncAnthropic:
-    settings = get_settings()
-    if not settings.chat_configured:
+def _client():
+    if not llm.configured():
         raise ChatUnavailableError(
-            "ANTHROPIC_API_KEY is not set, so the portfolio chat is unavailable"
+            "No model provider is configured, so the portfolio chat is "
+            "unavailable. Set LLM_PROVIDER=bedrock with AWS enabled, or "
+            "LLM_PROVIDER=anthropic with ANTHROPIC_API_KEY."
         )
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return llm.client()
 
 
 def build_context(
@@ -316,7 +318,7 @@ async def stream_reply(
         # the result. Two rounds is ample for a single what-if question.
         for _ in range(3):
             async with client.messages.stream(
-                model=settings.chat_model,
+                model=llm.model_id(),
                 max_tokens=settings.chat_max_tokens,
                 system=system,
                 messages=messages,

@@ -70,7 +70,14 @@ class Settings(BaseSettings):
     # --- Cache ------------------------------------------------------------
     analysis_cache_ttl_seconds: float = 300.0
 
-    # --- Claude -----------------------------------------------------------
+    # --- Model provider ---------------------------------------------------
+    # "bedrock" runs inference on Amazon Bedrock using the same IAM credentials
+    # as the rest of the AWS stack. "anthropic" calls the first-party API and
+    # needs ANTHROPIC_API_KEY; useful for local work without an AWS account.
+    llm_provider: str = "bedrock"
+    # Defaults to aws_region when blank. Bedrock model availability is
+    # region-specific, so this is separable.
+    bedrock_region: str = ""
     anthropic_api_key: str = ""
     chat_model: str = "claude-opus-5"
     chat_max_tokens: int = 4096
@@ -78,7 +85,49 @@ class Settings(BaseSettings):
 
     @property
     def chat_configured(self) -> bool:
+        """Whether a model provider is usable.
+
+        Bedrock carries no key of its own — it authenticates through the AWS
+        credential chain, so enabling AWS is what makes it available.
+        """
+        if self.llm_provider.strip().lower() == "bedrock":
+            return self.aws_enabled
         return bool(self.anthropic_api_key)
+
+    # --- AWS --------------------------------------------------------------
+    # Every AWS integration is optional; with aws_enabled false the service
+    # runs entirely locally. In ECS, leave the key fields blank so boto3
+    # resolves the task role instead.
+    aws_enabled: bool = False
+    aws_region: str = "ap-south-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_session_token: str = ""
+    aws_profile: str = ""
+    # Point the whole AWS stack at LocalStack or MinIO for local testing.
+    aws_endpoint_url: str = ""
+
+    # Secrets Manager — one JSON secret holding the API keys.
+    aws_secret_id: str = ""
+
+    # S3 — historical market data and portfolio snapshots.
+    s3_bucket: str = ""
+
+    # SQS — the Monte Carlo job queue.
+    sqs_queue_url: str = ""
+    # paths x horizon_days above which a run is queued rather than served inline.
+    simulation_queue_threshold: int = 5_000_000
+
+    # CloudWatch — custom metrics (logs arrive via stdout under ECS/Lambda).
+    cloudwatch_enabled: bool = False
+
+    # RDS PostgreSQL.
+    database_url: str = ""
+    database_pool_size: int = 5
+
+    @property
+    def database_configured(self) -> bool:
+        return bool(self.database_url)
 
     @property
     def alchemy_configured(self) -> bool:

@@ -1,0 +1,8 @@
+.venv
+.env
+__pycache__/
+*.pyc
+tests/
+reference.ipynb
+validation.ipynb
+.pytest_cache/
