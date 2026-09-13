@@ -77,6 +77,11 @@ class Recommendation(BaseModel):
     reports: list[AgentReport]
     judgement: Judgement | None = None
     trades: list["Trade"] = Field(default_factory=list)
+    holdings_after: list["PositionAfter"] = Field(
+        default_factory=list,
+        description="Every position kept after the proposed trades (all of them when no rebalance is needed)",
+    )
+    outlook: "RebalanceOutlook | None" = None
     warnings: list[str] = Field(
         default_factory=list,
         description="Agents that failed and were degraded rather than failing the run",
@@ -91,6 +96,42 @@ class Trade(BaseModel):
     value_usd: float
     quantity: float | None = None
     reason: str
+
+
+class PositionAfter(BaseModel):
+    """One position as it would stand after the proposed trades."""
+
+    symbol: str
+    classification: str
+    value_before_usd: float
+    value_after_usd: float
+    ratio_after: float = Field(description="Share of today's portfolio value")
+    action: str = Field(description="hold, reduce or increase")
+
+
+class OutcomeSummary(BaseModel):
+    """Monte Carlo outcome for one allocation of the book."""
+
+    stablecoin_ratio: float
+    expected_value: float
+    median_value: float
+    p5: float
+    p95: float
+    probability_of_loss: float
+    expected_drawdown: float
+    max_drawdown_p95: float
+    expected_return: float
+    volatility_of_outcomes: float
+
+
+class RebalanceOutlook(BaseModel):
+    """The book simulated as held and at the target, on identical market draws."""
+
+    horizon_days: int
+    simulations: int
+    current: OutcomeSummary
+    target: OutcomeSummary | None = None
+    note: str | None = None
 
 
 Recommendation.model_rebuild()

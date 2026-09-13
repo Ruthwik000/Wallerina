@@ -34,9 +34,31 @@ logger.setLevel(logging.INFO)
 CORE_ASSETS = ["ETH", "BTC", "USDC", "USDT", "DAI", "POL", "ARB", "OP"]
 
 
+_secrets_loaded = False
+
+
 def _run(coroutine):
-    """Run an async body inside Lambda's synchronous handler contract."""
-    return asyncio.run(coroutine)
+    """Run an async body inside Lambda's synchronous handler contract.
+
+    Every invocation gets a fresh event loop, so nothing bound to the previous
+    loop may outlive it: the database pool is closed before returning, or the
+    next warm invocation would reuse connections from a dead loop.
+    """
+    global _secrets_loaded
+    if not _secrets_loaded:
+        # The API loads Secrets Manager in its startup hook; a Lambda has none.
+        from backend.aws import secrets
+
+        secrets.load_into_environment()
+        _secrets_loaded = True
+
+    async def invoke():
+        try:
+            return await coroutine
+        finally:
+            await database.close()
+
+    return asyncio.run(invoke())
 
 
 # --------------------------------------------------------------------------
@@ -179,51 +201,100 @@ def run_simulation_jobs(event=None, context=None) -> dict:
     return _run(_run_simulation_jobs(event))
 
 
-async def _run_simulation_jobs(event) -> dict:
-    from backend.services import analysis, http
+# Failures that retrying cannot fix: the job is marked failed and its message
+# deleted. Anything else (a provider timeout, a database blip) is left for SQS to
+# redeliver after the visibility timeout; a redrive policy on the queue moves a
+# message that keeps failing to a dead-letter queue.
+PERMANENT_JOB_ERRORS = (KeyError, TypeError, ValueError)
+
+
+async def _process_job(job: dict) -> str:
+    """Run one queued job. Returns 'complete', 'failed' or 'retry'."""
+    from backend.services import analysis
+
+    job_id = job.get("job_id")
+
+    try:
+        with telemetry.timed("QueuedSimulation"):
+            _, estimate = await analysis.load_estimate(job["wallet_address"])
+            stress = (
+                await analysis.load_market_stress(estimate)
+                if job.get("use_prediction_markets")
+                else None
+            )
+            # CPU-bound: kept off the event loop, which in the API process is
+            # also serving requests.
+            result = await asyncio.to_thread(
+                analysis.run_simulation,
+                estimate,
+                estimate.total_value,
+                horizon_days=job["horizon_days"],
+                simulations=job["simulations"],
+                seed=job.get("seed"),
+                stress=stress,
+                stablecoin_ratio=job.get("stablecoin_ratio"),
+            )
+    except (analysis.InsufficientDataError, *PERMANENT_JOB_ERRORS) as error:
+        logger.warning("Simulation job %s failed permanently: %s", job_id, error)
+        telemetry.put_metric("SimulationFailures", 1, "Count")
+        if job_id:
+            await database.fail_simulation_job(job_id, f"{type(error).__name__}: {error}")
+        return "failed"
+    except Exception:
+        logger.exception("Simulation job %s failed; leaving it for redelivery", job_id)
+        telemetry.put_metric("SimulationFailures", 1, "Count")
+        return "retry"
+
+    if not job_id or not await database.complete_simulation_job(job_id, result.model_dump(mode="json")):
+        # The result is not durable, so the message must not be deleted.
+        return "retry"
+    return "complete"
+
+
+async def _run_simulation_jobs(event, wait_seconds: int = 20) -> dict:
+    from backend.services import http
 
     records = (event or {}).get("Records") if isinstance(event, dict) else None
 
     if records:
         import json
 
-        jobs = [json.loads(record["body"]) for record in records]
+        jobs = []
+        for record in records:
+            try:
+                job = json.loads(record["body"])
+            except (KeyError, json.JSONDecodeError):
+                logger.warning("Discarding malformed SQS record")
+                continue
+            job["_message_id"] = record.get("messageId")
+            jobs.append(job)
     else:
-        jobs = queue.receive_jobs(max_messages=5)
+        # A long poll blocks for up to wait_seconds, so it runs in a thread.
+        jobs = await asyncio.to_thread(queue.receive_jobs, 5, wait_seconds)
 
+    summary = {"processed": 0, "failed": 0, "retried": 0, "batchItemFailures": []}
     if not jobs:
-        return {"processed": 0}
+        return summary
 
     started = await http.startup()
-    processed = 0
 
     try:
         for job in jobs:
-            try:
-                with telemetry.timed("QueuedSimulation"):
-                    _, estimate = await analysis.load_estimate(job["wallet_address"])
-                    result = analysis.run_simulation(
-                        estimate,
-                        estimate.total_value,
-                        horizon_days=job["horizon_days"],
-                        simulations=job["simulations"],
-                        seed=job.get("seed"),
-                        stablecoin_ratio=job.get("stablecoin_ratio"),
-                    )
+            outcome = await _process_job(job)
 
-                await database.complete_simulation_job(
-                    job["job_id"], result.model_dump(mode="json")
-                )
+            if outcome == "retry":
+                summary["retried"] += 1
+                # Reported back to a Lambda event source configured with
+                # ReportBatchItemFailures, so only these messages are retried.
+                if job.get("_message_id"):
+                    summary["batchItemFailures"].append({"itemIdentifier": job["_message_id"]})
+                continue
 
-                if handle := job.get("_receipt_handle"):
-                    queue.complete_job(handle)
-
-                processed += 1
-            except Exception as error:
-                logger.exception("Simulation job failed: %s", error)
-                telemetry.put_metric("SimulationFailures", 1, "Count")
+            summary["processed" if outcome == "complete" else "failed"] += 1
+            if handle := job.get("_receipt_handle"):
+                await asyncio.to_thread(queue.complete_job, handle)
     finally:
         if started:
             await http.shutdown()
 
-    return {"processed": processed}
+    return summary

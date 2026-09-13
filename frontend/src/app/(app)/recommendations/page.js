@@ -44,6 +44,45 @@ const TRADE_COLUMNS = [
   { key: "reason", header: "Why" },
 ];
 
+const POSITION_COLUMNS = [
+  { key: "action", header: "After rebalance" },
+  { key: "symbol", header: "Asset" },
+  { key: "classification", header: "Type" },
+  { key: "value_before_usd", header: "Before", align: "right" },
+  { key: "value_after_usd", header: "After", align: "right" },
+  { key: "ratio_after", header: "Share after", align: "right" },
+];
+
+// Measures compared as held and after the rebalance, on identical market draws.
+const OUTLOOK_METRICS = [
+  { key: "expected_value", label: "Expected value", kind: "usd" },
+  { key: "median_value", label: "Median value", kind: "usd" },
+  { key: "p5", label: "5th percentile value", kind: "usd" },
+  { key: "probability_of_loss", label: "Probability of loss", kind: "ratio" },
+  { key: "expected_drawdown", label: "Expected drawdown", kind: "ratio" },
+  { key: "max_drawdown_p95", label: "Drawdown in the worst 5% of paths", kind: "ratio" },
+];
+
+const OUTLOOK_COLUMNS = [
+  { key: "label", header: "Measure" },
+  { key: "current", header: "As held", align: "right" },
+  { key: "target", header: "After rebalance", align: "right" },
+  { key: "change", header: "Change", align: "right" },
+];
+
+function formatMeasure(value, kind) {
+  return kind === "usd" ? usd(value, { decimals: 0 }) : ratio(value);
+}
+
+function formatChange(current, target, kind) {
+  if (current == null || target == null) return "—";
+  const difference = target - current;
+  if (kind === "usd") {
+    return `${difference < 0 ? "−" : "+"}${usd(Math.abs(difference), { decimals: 0 })}`;
+  }
+  return ratio(difference, { sign: true });
+}
+
 const HISTORY_COLUMNS = [
   { key: "generated_at", header: "When" },
   { key: "goal", header: "Goal" },
@@ -170,6 +209,16 @@ function RecommendationView({ runId, onChangeGoal, onRerun }) {
   const grounding = judgement?.grounding;
   const scenarioRows = scenarios ?? [];
   const tradeRows = data.trades.map((trade, index) => ({ ...trade, key: `${trade.action}-${trade.symbol}-${index}` }));
+  const positionRows = data.holdings_after ?? [];
+  const outlook = data.outlook;
+  const outlookRows = outlook
+    ? OUTLOOK_METRICS.map((metric) => ({
+        ...metric,
+        current: outlook.current[metric.key],
+        target: outlook.target?.[metric.key],
+      }))
+    : [];
+  const warnings = data.warnings ?? [];
 
   return (
     <div className={styles.stackWide}>
@@ -178,6 +227,9 @@ function RecommendationView({ runId, onChangeGoal, onRerun }) {
         <Notice>
           The latest run failed ({result.error?.detail || result.error?.message}); showing the previous result.
         </Notice>
+      )}
+      {warnings.length > 0 && (
+        <Notice>Part of this run was degraded: {warnings.join("; ")}.</Notice>
       )}
 
       <div className={`${styles.statRow} ${styles.statRow4}`}>
@@ -362,6 +414,67 @@ function RecommendationView({ runId, onChangeGoal, onRerun }) {
           />
         )}
       </Panel>
+
+      <Panel
+        title="Positions after rebalance"
+        meta={
+          tradeRows.length
+            ? "What you would keep, reduce and add · positions under 0.5% of the wallet are omitted"
+            : "No trades proposed, so every position is held"
+        }
+        flush
+      >
+        {positionRows.length === 0 ? (
+          <p className={styles.helper}>No positions to show.</p>
+        ) : (
+          <Table
+            columns={POSITION_COLUMNS}
+            rows={positionRows}
+            rowKey={(row) => row.symbol}
+            renderCell={(row, column) => {
+              switch (column.key) {
+                case "action":
+                  return <span className={styles.txType}>{row.action}</span>;
+                case "symbol":
+                  return <span className={styles.assetSymbol}>{row.symbol}</span>;
+                case "classification":
+                  return humanise(row.classification);
+                case "value_before_usd":
+                case "value_after_usd":
+                  return usd(row[column.key], { decimals: 0 });
+                default:
+                  return ratio(row.ratio_after);
+              }
+            }}
+          />
+        )}
+      </Panel>
+
+      {outlook && (
+        <Panel
+          title="After rebalance"
+          meta={`Monte Carlo · ${outlook.horizon_days}-day horizon · ${outlook.simulations.toLocaleString("en-US")} paths · identical market draws for both columns`}
+          flush
+        >
+          {outlook.note && <p className={styles.helper}>{outlook.note}</p>}
+          <Table
+            columns={OUTLOOK_COLUMNS}
+            rows={outlookRows}
+            rowKey={(row) => row.key}
+            renderCell={(row, column) => {
+              switch (column.key) {
+                case "current":
+                case "target":
+                  return formatMeasure(row[column.key], row.kind);
+                case "change":
+                  return formatChange(row.current, row.target, row.kind);
+                default:
+                  return row.label;
+              }
+            }}
+          />
+        </Panel>
+      )}
 
       <Panel
         title="Allocation evidence"

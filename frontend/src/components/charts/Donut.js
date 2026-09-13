@@ -49,10 +49,14 @@ function arc(startAngle, endAngle) {
 /**
  * Allocation ring.
  *
- * @param {{symbol: string, weight: number}[]} segments  weights in percent
+ * A symbol is not unique on its own — the same asset can be held on several
+ * networks — so each segment carries an `id` for identity and React keys.
+ *
+ * @param {{id?: string, symbol: string, weight: number}[]} segments  weights in percent
  */
 export default function Donut({ segments, caption, captionLabel }) {
   let cursor = 0;
+  const slotKey = (segment, index) => segment.id ?? `${segment.symbol}-${index}`;
 
   return (
     <div className={styles.donutWrap}>
@@ -68,7 +72,7 @@ export default function Donut({ segments, caption, captionLabel }) {
           cursor = end;
           return (
             <path
-              key={segment.symbol}
+              key={slotKey(segment, index)}
               d={arc(start, Math.max(end - 0.012, start))}
               fill={slotColor(index)}
               stroke="var(--deep-black)"
@@ -92,7 +96,7 @@ export default function Donut({ segments, caption, captionLabel }) {
 
       <ul className={styles.donutLegend}>
         {segments.map((segment, index) => (
-          <li key={segment.symbol} className={styles.donutLegendRow}>
+          <li key={slotKey(segment, index)} className={styles.donutLegendRow}>
             <span
               className={styles.swatch}
               style={{ background: slotColor(index) }}

@@ -1,0 +1,606 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Wallerina backend: the API on ECS Fargate behind an Application Load Balancer,
+  the refresh jobs on Lambda scheduled by EventBridge, and the Monte Carlo queue
+  worker on Lambda fed by SQS. Reuses the existing Aurora cluster (IAM
+  authentication) and S3 bucket. See deploy/README.md.
+
+Parameters:
+  ImageTag:
+    Type: String
+    Description: Tag of the wallerina-api and wallerina-jobs images in ECR.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets in at least two availability zones, for the load balancer and tasks.
+  CorsOrigins:
+    Type: String
+    Description: Frontend origins allowed to call the API, comma-separated (for example https://app.example.com).
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate for HTTPS. Blank serves plain HTTP on port 80.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  RdsHost:
+    Type: String
+    Default: database-1.cluster-c16yq84iu7c3.eu-north-1.rds.amazonaws.com
+  RdsClusterResourceId:
+    Type: String
+    Default: cluster-RXWBFUSUROKWU4UOR4YHJ2LXKQ
+    Description: DbClusterResourceId of the Aurora cluster, used in the rds-db:connect permission.
+  RdsDatabase:
+    Type: String
+    Default: wallerina
+  RdsUser:
+    Type: String
+    Default: wallerina_app
+  DataBucketName:
+    Type: String
+    Default: wallerina
+    Description: Existing S3 bucket for price history and snapshots.
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Email notified when an alarm fires. Blank creates the alarms without notifications.
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Secrets: API keys, filled in after the first deploy (see README).
+  # ---------------------------------------------------------------------------
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/app
+      Description: Wallerina API keys, read at startup through AWS_SECRET_ID.
+      SecretString: '{"ALCHEMY_API_KEY": "", "NVIDIA_API_KEY": ""}'
+
+  # ---------------------------------------------------------------------------
+  # Simulation queue
+  # ---------------------------------------------------------------------------
+  SimulationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  SimulationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      # Six times the worker's timeout, as AWS recommends for Lambda consumers.
+      VisibilityTimeout: 3600
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SimulationDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # Logs
+  # ---------------------------------------------------------------------------
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /wallerina/${AWS::StackName}/api
+      RetentionInDays: 30
+
+  JobsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /wallerina/${AWS::StackName}/jobs
+      RetentionInDays: 30
+
+  # ---------------------------------------------------------------------------
+  # IAM
+  # ---------------------------------------------------------------------------
+  ApiExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ApiTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: wallerina-api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsClusterResourceId}/${RdsUser}
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub arn:aws:s3:::${DataBucketName}/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${DataBucketName}
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt SimulationQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AppSecret
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+
+  JobsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: wallerina-jobs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: rds-db:connect
+                Resource: !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:${RdsClusterResourceId}/${RdsUser}
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub arn:aws:s3:::${DataBucketName}/*
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub arn:aws:s3:::${DataBucketName}
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:ChangeMessageVisibility, sqs:GetQueueAttributes]
+                Resource: !GetAtt SimulationQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AppSecret
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # Network and load balancer
+  # ---------------------------------------------------------------------------
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Wallerina load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - !If
+          - HasCertificate
+          - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+          - !Ref AWS::NoValue
+
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Wallerina API tasks, reachable only from the load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+      LoadBalancerAttributes:
+        # Recommendations with a free-text goal and chat streams can run past a minute.
+        - { Key: idle_timeout.timeout_seconds, Value: "180" }
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "30" }
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions: !If
+        - HasCertificate
+        - - Type: redirect
+            RedirectConfig: { Protocol: HTTPS, Port: "443", StatusCode: HTTP_301 }
+        - - Type: forward
+            TargetGroupArn: !Ref TargetGroup
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: HasCertificate
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---------------------------------------------------------------------------
+  # API on ECS Fargate
+  # ---------------------------------------------------------------------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-api
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "1024"
+      Memory: "2048"
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ApiExecutionRole.Arn
+      TaskRoleArn: !GetAtt ApiTaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wallerina-api:${ImageTag}
+          Essential: true
+          StopTimeout: 30
+          PortMappings:
+            - { ContainerPort: 8000, Protocol: tcp }
+          Environment:
+            - { Name: APP_ENV, Value: production }
+            - { Name: CORS_ORIGINS, Value: !Ref CorsOrigins }
+            - { Name: TRUST_PROXY_HEADERS, Value: "true" }
+            - { Name: AWS_ENABLED, Value: "true" }
+            - { Name: AWS_REGION, Value: !Ref AWS::Region }
+            - { Name: AWS_SECRET_ID, Value: !Ref AppSecret }
+            - { Name: S3_BUCKET, Value: !Ref DataBucketName }
+            - { Name: SQS_QUEUE_URL, Value: !Ref SimulationQueue }
+            - { Name: CLOUDWATCH_ENABLED, Value: "true" }
+            - { Name: RDS_HOST, Value: !Ref RdsHost }
+            - { Name: RDS_PORT, Value: "5432" }
+            - { Name: RDS_DATABASE, Value: !Ref RdsDatabase }
+            - { Name: RDS_USER, Value: !Ref RdsUser }
+            # The scheduled jobs and the queue worker run on Lambda instead.
+            - { Name: REFRESH_ENABLED, Value: "false" }
+            - { Name: SIMULATION_WORKER_ENABLED, Value: "false" }
+          HealthCheck:
+            Command:
+              - CMD
+              - python
+              - -c
+              - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  ApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref ApiTaskDefinition
+      HealthCheckGracePeriodSeconds: 90
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public IPs let tasks reach Alchemy, NVIDIA and Aurora without a NAT gateway.
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref ApiSecurityGroup]
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref TargetGroup
+      Tags:
+        # Referencing the listener that forwards to the target group makes the
+        # service wait for it; ECS rejects a target group no listener uses.
+        - Key: wallerina:listener
+          Value: !If [HasCertificate, !Ref HttpsListener, !Ref HttpListener]
+
+  # ---------------------------------------------------------------------------
+  # Jobs on Lambda (same code, the wallerina-jobs image)
+  # ---------------------------------------------------------------------------
+  RefreshMarketDataFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-refresh-market-data
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wallerina-jobs:${ImageTag}
+      ImageConfig:
+        Command: [backend.aws.handlers.refresh_market_data]
+      Role: !GetAtt JobsRole.Arn
+      Architectures: [x86_64]
+      MemorySize: 1024
+      Timeout: 300
+      LoggingConfig:
+        LogGroup: !Ref JobsLogGroup
+      Environment:
+        Variables:
+          APP_ENV: production
+          AWS_ENABLED: "true"
+          AWS_SECRET_ID: !Ref AppSecret
+          S3_BUCKET: !Ref DataBucketName
+          SQS_QUEUE_URL: !Ref SimulationQueue
+          CLOUDWATCH_ENABLED: "true"
+          RDS_HOST: !Ref RdsHost
+          RDS_PORT: "5432"
+          RDS_DATABASE: !Ref RdsDatabase
+          RDS_USER: !Ref RdsUser
+
+  RefreshPredictionDataFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-refresh-prediction-data
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wallerina-jobs:${ImageTag}
+      ImageConfig:
+        Command: [backend.aws.handlers.refresh_prediction_data]
+      Role: !GetAtt JobsRole.Arn
+      Architectures: [x86_64]
+      MemorySize: 512
+      Timeout: 120
+      LoggingConfig:
+        LogGroup: !Ref JobsLogGroup
+      Environment:
+        Variables:
+          APP_ENV: production
+          AWS_ENABLED: "true"
+          AWS_SECRET_ID: !Ref AppSecret
+          S3_BUCKET: !Ref DataBucketName
+          CLOUDWATCH_ENABLED: "true"
+
+  SnapshotPortfoliosFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-snapshot-portfolios
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wallerina-jobs:${ImageTag}
+      ImageConfig:
+        Command: [backend.aws.handlers.snapshot_portfolios]
+      Role: !GetAtt JobsRole.Arn
+      Architectures: [x86_64]
+      MemorySize: 1024
+      Timeout: 900
+      LoggingConfig:
+        LogGroup: !Ref JobsLogGroup
+      Environment:
+        Variables:
+          APP_ENV: production
+          AWS_ENABLED: "true"
+          AWS_SECRET_ID: !Ref AppSecret
+          S3_BUCKET: !Ref DataBucketName
+          CLOUDWATCH_ENABLED: "true"
+          RDS_HOST: !Ref RdsHost
+          RDS_PORT: "5432"
+          RDS_DATABASE: !Ref RdsDatabase
+          RDS_USER: !Ref RdsUser
+
+  SimulationWorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-simulation-worker
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/wallerina-jobs:${ImageTag}
+      ImageConfig:
+        Command: [backend.aws.handlers.run_simulation_jobs]
+      Role: !GetAtt JobsRole.Arn
+      Architectures: [x86_64]
+      # Lambda allocates CPU in proportion to memory; the simulator is CPU-bound.
+      MemorySize: 3008
+      Timeout: 600
+      LoggingConfig:
+        LogGroup: !Ref JobsLogGroup
+      Environment:
+        Variables:
+          APP_ENV: production
+          AWS_ENABLED: "true"
+          AWS_SECRET_ID: !Ref AppSecret
+          S3_BUCKET: !Ref DataBucketName
+          SQS_QUEUE_URL: !Ref SimulationQueue
+          CLOUDWATCH_ENABLED: "true"
+          RDS_HOST: !Ref RdsHost
+          RDS_PORT: "5432"
+          RDS_DATABASE: !Ref RdsDatabase
+          RDS_USER: !Ref RdsUser
+
+  SimulationWorkerEventSource:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref SimulationWorkerFunction
+      EventSourceArn: !GetAtt SimulationQueue.Arn
+      # One heavy job per invocation, so one slow run cannot delay the rest.
+      BatchSize: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig:
+        # Bounds concurrent simulations, and with them database connections.
+        MaximumConcurrency: 2
+
+  RefreshSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Refresh market data, prediction markets and wallet snapshots every 5 minutes
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - { Id: market-data, Arn: !GetAtt RefreshMarketDataFunction.Arn }
+        - { Id: prediction-data, Arn: !GetAtt RefreshPredictionDataFunction.Arn }
+        - { Id: snapshots, Arn: !GetAtt SnapshotPortfoliosFunction.Arn }
+
+  RefreshMarketDataPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RefreshMarketDataFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RefreshSchedule.Arn
+
+  RefreshPredictionDataPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RefreshPredictionDataFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RefreshSchedule.Arn
+
+  SnapshotPortfoliosPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SnapshotPortfoliosFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RefreshSchedule.Arn
+
+  # ---------------------------------------------------------------------------
+  # Alarms
+  # ---------------------------------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmEmail
+
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A simulation job failed three times and was moved to the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SimulationDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The API returned more than 10 server errors in 5 minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  UnhealthyApiAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: No healthy API task behind the load balancer.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  WorkerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The simulation worker Lambda raised errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SimulationWorkerFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+Outputs:
+  ApiUrl:
+    Description: Set the frontend's NEXT_PUBLIC_API_URL to this.
+    Value: !If
+      - HasCertificate
+      - !Sub https://${LoadBalancer.DNSName}
+      - !Sub http://${LoadBalancer.DNSName}
+  AppSecretArn:
+    Description: Put ALCHEMY_API_KEY and NVIDIA_API_KEY here (see deploy/README.md).
+    Value: !Ref AppSecret
+  SimulationQueueUrl:
+    Value: !Ref SimulationQueue
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt ApiService.Name
+  ApiLogGroupName:
+    Value: !Ref ApiLogGroup
+  JobsLogGroupName:
+    Value: !Ref JobsLogGroup

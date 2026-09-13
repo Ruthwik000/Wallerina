@@ -7,6 +7,7 @@ picked up automatically) so that nothing sensitive has to live in source.
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,6 +18,39 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # --- Service ----------------------------------------------------------
+    # "production" turns off auto-reload and refuses to start with unsafe
+    # settings (see production_problems).
+    app_env: str = "development"
+    # Browser origins allowed to call the API, comma-separated.
+    cors_origins: str = "http://localhost:3000"
+    # Required as the X-Admin-Token header on operational endpoints such as
+    # POST /api/refresh/run. Left blank, those endpoints are open in development
+    # and disabled in production.
+    admin_token: str = ""
+    # Requests per minute per client on the expensive endpoints (model calls,
+    # simulations, wallet scans). 0 disables the limit.
+    rate_limit_per_minute: int = 30
+    # Behind a load balancer, read the caller's address from X-Forwarded-For.
+    trust_proxy_headers: bool = False
+
+    # --- Wallet sign-in (EIP-4361) ------------------------------------------
+    # Signs session tokens. Set it wherever more than one API process runs:
+    # without it each process signs with its own random secret, so a session
+    # only works on the process that issued it and ends when that one restarts.
+    session_secret: str = ""
+    session_ttl_hours: int = 24
+    # Accepted `domain` values in sign-in messages, comma-separated. Blank
+    # means the hosts of CORS_ORIGINS.
+    siwe_domains: str = ""
+
+    # --- Execution (0x Swap API) ------------------------------------------
+    # Key from dashboard.0x.org. Without it trades can be prepared and reviewed
+    # but not quoted or executed.
+    zeroex_api_key: str = ""
+    zeroex_base_url: str = "https://api.0x.org"
+    swap_slippage_bps: int = 100
 
     # --- Alchemy ----------------------------------------------------------
     alchemy_api_key: str = ""
@@ -118,6 +152,9 @@ class Settings(BaseSettings):
     sqs_queue_url: str = ""
     # paths x horizon_days above which a run is queued rather than served inline.
     simulation_queue_threshold: int = 5_000_000
+    # Consume the queue inside the API process. Turn off where a Lambda on the
+    # queue, or a separate worker service, consumes it instead.
+    simulation_worker_enabled: bool = True
 
     # CloudWatch — custom metrics (logs arrive via stdout under ECS/Lambda).
     cloudwatch_enabled: bool = False
@@ -136,6 +173,34 @@ class Settings(BaseSettings):
     @property
     def alchemy_configured(self) -> bool:
         return bool(self.alchemy_api_key)
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def siwe_domain_list(self) -> list[str]:
+        if self.siwe_domains.strip():
+            return [domain.strip() for domain in self.siwe_domains.split(",") if domain.strip()]
+        return [urlsplit(origin).netloc for origin in self.cors_origin_list if urlsplit(origin).netloc]
+
+
+def production_problems(settings: Settings) -> list[str]:
+    """Settings unsafe to serve production traffic with. Empty when fit to start."""
+    problems: list[str] = []
+
+    origins = settings.cors_origin_list
+    if not origins or "*" in origins:
+        problems.append("CORS_ORIGINS must list the frontend's origins explicitly")
+
+    if settings.aws_access_key_id or settings.aws_secret_access_key:
+        problems.append("static AWS keys are set; production must use the task role")
+
+    return problems
 
 
 @lru_cache

@@ -209,6 +209,17 @@ Interactive simulations stay inline; only runs above
 `SIMULATION_QUEUE_THRESHOLD` (paths × horizon) are queued — offloading a
 5,000-path run would add latency rather than remove it.
 
+## Production
+
+Set `APP_ENV=production`. The service then refuses to start with wildcard
+`CORS_ORIGINS` or static AWS keys, runs without auto-reload, and disables
+`POST /api/refresh/run` unless `ADMIN_TOKEN` is set. Model, simulation and
+wallet-scan endpoints are limited to `RATE_LIMIT_PER_MINUTE` requests per client
+(set `TRUST_PROXY_HEADERS=true` behind a load balancer).
+
+Deployment to ECS/Fargate, Lambda, EventBridge and SQS is described in
+[`../deploy/README.md`](../deploy/README.md).
+
 ## Layout
 
 ```
@@ -252,9 +263,10 @@ src/backend/
 * **Persistence needs RDS.** Without `RDS_HOST` nothing is stored, so the
   recommendation log and history endpoint are empty. The schema is created
   automatically on boot when a database is configured.
-* **Only part of the AWS layer is verified live.** S3 (put/get), SQS
-  (send/receive/delete) and CloudWatch metrics have been exercised against a
-  real account. RDS, Secrets Manager, Lambda, EventBridge and ECS have not.
+* **Only part of the AWS layer is verified live.** S3, SQS (including queued
+  simulations end to end), CloudWatch metrics and RDS with IAM authentication
+  have been exercised against a real account. Secrets Manager, Lambda,
+  EventBridge and ECS are defined in `deploy/` but have not been deployed.
 * **Allocation constants are calibrated by judgement, not fitted.** The
   reference volatility, sensitivities and caps in `quant/allocation.py` are
   reasoned defaults; they have not been backtested against historical

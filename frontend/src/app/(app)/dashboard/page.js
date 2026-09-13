@@ -12,9 +12,10 @@ import Donut from "@/components/charts/Donut";
 import FanChart from "@/components/charts/FanChart";
 import { ratio, usd } from "@/lib/format";
 import styles from "../page.module.css";
+import PerformancePanel from "./PerformancePanel";
 
 export default function DashboardPage() {
-  const { portfolio, risk, simulation, marketStress, excluded } = useWallet();
+  const { address, portfolio, risk, simulation, marketStress, excluded } = useWallet();
 
   const header = (
     <PageHeader
@@ -33,6 +34,7 @@ export default function DashboardPage() {
     <PageState header={header}>
       {() => {
         const allocation = portfolio.holdings.slice(0, 8).map((holding) => ({
+          id: `${holding.network}:${holding.contract_address ?? "native"}`,
           symbol: holding.symbol,
           weight: holding.portfolio_ratio * 100,
         }));
@@ -74,6 +76,8 @@ export default function DashboardPage() {
                 size="lg"
               />
             </div>
+
+            <PerformancePanel address={address} />
 
             <div className={`${styles.grid} ${styles.splitWide}`}>
               <Panel

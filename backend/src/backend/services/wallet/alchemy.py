@@ -389,3 +389,41 @@ async def fetch_portfolio_history(
         for symbol, history in results
         if history is not None and len(history.points) >= 2
     }
+
+
+# Alchemy's JSON-RPC subdomain for each chain trades can be executed on.
+RPC_NETWORKS: dict[int, str] = {
+    1: "eth-mainnet",
+    8453: "base-mainnet",
+    42161: "arb-mainnet",
+    137: "polygon-mainnet",
+}
+
+
+async def transaction_status(chain_id: int, tx_hash: str) -> str:
+    """'submitted' until mined, then 'confirmed' or 'failed', read from the chain."""
+    settings = get_settings()
+    if not settings.alchemy_configured:
+        raise UpstreamError(PROVIDER, "ALCHEMY_API_KEY is not set")
+
+    network = RPC_NETWORKS.get(chain_id)
+    if network is None:
+        raise ValueError(f"Unsupported chain {chain_id}")
+
+    response = await get_client().post(
+        f"https://{network}.g.alchemy.com/v2/{settings.alchemy_api_key}",
+        json={"jsonrpc": "2.0", "id": 1, "method": "eth_getTransactionReceipt", "params": [tx_hash]},
+    )
+    if response.status_code != 200:
+        raise UpstreamError(
+            PROVIDER, f"eth_getTransactionReceipt returned {response.status_code}", response.status_code
+        )
+
+    body = response.json()
+    if body.get("error"):
+        raise UpstreamError(PROVIDER, f"eth_getTransactionReceipt failed: {body['error'].get('message')}")
+
+    receipt = body.get("result")
+    if not receipt:
+        return "submitted"
+    return "confirmed" if receipt.get("status") == "0x1" else "failed"

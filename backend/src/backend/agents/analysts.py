@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 
 from backend.assets.registry import AssetClass
-from backend.models.agents import AgentContext, AgentReport, Finding
+from backend.models.agents import AgentContext, AgentReport, Finding, PositionAfter
 from backend.models.goal import RiskTolerance
 from backend.models.market import MarketStress
 from backend.models.portfolio import Portfolio
@@ -339,6 +339,55 @@ def analyse_stablecoins(context: AgentContext, portfolio: Portfolio) -> AgentRep
         ),
         findings=findings,
     )
+
+
+def positions_after(portfolio: Portfolio, trades: list) -> list[PositionAfter]:
+    """Every position that remains once the proposed trades are made.
+
+    Positions are aggregated by symbol across networks, matching how trades
+    name them. With no trades this is the book as held. Positions under 0.5%
+    of the portfolio are left out, the same dust threshold trades use.
+    """
+    total = portfolio.total_value_usd
+    if total <= 0:
+        return []
+
+    before: dict[str, float] = {}
+    classes: dict[str, str] = {}
+    for holding in portfolio.holdings:
+        before[holding.symbol] = before.get(holding.symbol, 0.0) + holding.value_usd
+        classes.setdefault(holding.symbol, AssetClass(holding.classification).value)
+
+    after = dict(before)
+    for trade in trades:
+        change = trade.value_usd if trade.action == "buy" else -trade.value_usd
+        after[trade.symbol] = after.get(trade.symbol, 0.0) + change
+
+    dust = total * 0.005
+    positions: list[PositionAfter] = []
+    for symbol, value in after.items():
+        value = max(value, 0.0)
+        if value < dust:
+            continue
+        start = before.get(symbol, 0.0)
+        if value > start + 0.01:
+            action = "increase"
+        elif value < start - 0.01:
+            action = "reduce"
+        else:
+            action = "hold"
+        positions.append(
+            PositionAfter(
+                symbol=symbol,
+                classification=classes.get(symbol, AssetClass.UNKNOWN.value),
+                value_before_usd=round(start, 2),
+                value_after_usd=round(value, 2),
+                ratio_after=value / total,
+                action=action,
+            )
+        )
+
+    return sorted(positions, key=lambda position: -position.value_after_usd)
 
 
 def propose_trades(

@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Wallerina container repositories. Deployed first, because the images must be
+  pushed before the application stack (wallerina.yaml) can reference them.
+
+Resources:
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: wallerina-api
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Keep the 20 most recent images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":20},
+          "action":{"type":"expire"}}]}
+
+  JobsRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: wallerina-jobs
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: >-
+          {"rules":[{"rulePriority":1,"description":"Keep the 20 most recent images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":20},
+          "action":{"type":"expire"}}]}
+
+Outputs:
+  ApiRepositoryUri:
+    Value: !GetAtt ApiRepository.RepositoryUri
+  JobsRepositoryUri:
+    Value: !GetAtt JobsRepository.RepositoryUri

@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from backend.agents import grounding, llm
-from backend.models.agents import AgentContext, AgentReport, Judgement
+from backend.models.agents import AgentContext, AgentReport, Judgement, RebalanceOutlook
 from backend.models.goal import AllocationDecision
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,10 @@ SCHEMA = {
 
 
 def build_brief(
-    context: AgentContext, decision: AllocationDecision, reports: list[AgentReport]
+    context: AgentContext,
+    decision: AllocationDecision,
+    reports: list[AgentReport],
+    outlook: RebalanceOutlook | None = None,
 ) -> str:
     """The facts the explainer is allowed to use. Nothing else is in scope."""
     intent, rules = context.intent, context.rules
@@ -118,6 +121,24 @@ def build_brief(
         lines.append(
             f"- {driver.name}: {driver.contribution:+.1%} — {driver.detail}"
         )
+
+    if outlook is not None:
+        lines.append("")
+        lines.append(
+            f"MONTE CARLO EVIDENCE ({outlook.horizon_days}-day horizon, identical market draws)"
+        )
+        rows = [("As held", outlook.current)]
+        if outlook.target is not None:
+            rows.append(("At target", outlook.target))
+        for label, outcome in rows:
+            lines.append(
+                f"{label} ({outcome.stablecoin_ratio:.1%} stablecoins): expected drawdown "
+                f"{outcome.expected_drawdown:.1%}, probability of loss "
+                f"{outcome.probability_of_loss:.1%}, 5th percentile value ${outcome.p5:,.0f}, "
+                f"expected value ${outcome.expected_value:,.0f}"
+            )
+        if outlook.note:
+            lines.append(outlook.note)
 
     lines.append("")
     lines.append("AGENT FINDINGS")
@@ -169,14 +190,18 @@ def _fallback(decision: AllocationDecision, reports: list[AgentReport]) -> Judge
 
 
 async def explain(
-    context: AgentContext, decision: AllocationDecision, reports: list[AgentReport]
+    context: AgentContext,
+    decision: AllocationDecision,
+    reports: list[AgentReport],
+    *,
+    outlook: RebalanceOutlook | None = None,
 ) -> Judgement:
     """Explain the allocation, then have the grounding agent verify it.
 
     Falls back to the deterministic write-up when the model is unavailable,
     fails, or cites a figure the engine did not produce.
     """
-    brief = build_brief(context, decision, reports)
+    brief = build_brief(context, decision, reports, outlook)
 
     if not llm.configured():
         return _checked_fallback(decision, reports, brief)

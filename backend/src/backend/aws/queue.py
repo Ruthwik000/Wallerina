@@ -41,13 +41,19 @@ def enqueue_simulation(
     simulations: int,
     stablecoin_ratio: float | None = None,
     seed: int | None = None,
+    use_prediction_markets: bool = False,
+    job_id: str | None = None,
 ) -> str | None:
-    """Queue a simulation. Returns the job id, or None if not queued."""
+    """Queue a simulation. Returns the job id, or None if not queued.
+
+    Pass ``job_id`` when the job's database row already exists, so the worker
+    writes its result into that row.
+    """
     settings = get_settings()
     if not settings.sqs_queue_url:
         return None
 
-    job_id = str(uuid.uuid4())
+    job_id = job_id or str(uuid.uuid4())
     body = {
         "job_id": job_id,
         "wallet_address": wallet_address,
@@ -55,6 +61,7 @@ def enqueue_simulation(
         "simulations": simulations,
         "stablecoin_ratio": stablecoin_ratio,
         "seed": seed,
+        "use_prediction_markets": use_prediction_markets,
         "requested_at": datetime.now(UTC).isoformat(),
     }
 
@@ -72,6 +79,13 @@ def enqueue_simulation(
         return None
 
 
+# How long a received job stays hidden from other consumers. It must outlast the
+# slowest simulation: if it expires mid-run, SQS hands the same job out again
+# and it is computed twice. Set per receive, so it holds whatever the queue's
+# own default is.
+JOB_VISIBILITY_SECONDS = 900
+
+
 def receive_jobs(max_messages: int = 1, wait_seconds: int = 20) -> list[dict]:
     """Long-poll for queued jobs. Used by the simulation worker."""
     settings = get_settings()
@@ -83,6 +97,7 @@ def receive_jobs(max_messages: int = 1, wait_seconds: int = 20) -> list[dict]:
             QueueUrl=settings.sqs_queue_url,
             MaxNumberOfMessages=max(1, min(max_messages, 10)),
             WaitTimeSeconds=wait_seconds,
+            VisibilityTimeout=JOB_VISIBILITY_SECONDS,
         )
     except (AwsUnavailable, Exception) as error:
         logger.warning("Could not read the simulation queue: %s", error)

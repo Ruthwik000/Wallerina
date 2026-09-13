@@ -180,3 +180,21 @@ export async function streamChat({ walletAddress, message, history = [], onEvent
     }
   }
 }
+
+/* Value and risk over time. `backfilled` is today's holdings valued over their
+   price history (available at once); `recorded` is what the database saved for
+   this wallet, which fills in as the background refresh runs. */
+export function fetchPerformanceHistory(address, { recordedDays = 30, signal } = {}) {
+  return request(`/api/history/${address}/performance?recorded_days=${recordedDays}`, { signal });
+}
+
+export function fetchRiskHistory(address, { recordedDays = 30, signal } = {}) {
+  return request(`/api/history/${address}/risk?recorded_days=${recordedDays}`, { signal });
+}
+
+/* A heavy simulation is queued rather than run inline: `runSimulation` then
+   resolves to a job ({ job_id, status: "queued" }) whose result is fetched
+   here once its status is "complete". */
+export function fetchSimulationJob(jobId, { signal } = {}) {
+  return request(`/api/simulate/jobs/${jobId}`, { signal });
+}

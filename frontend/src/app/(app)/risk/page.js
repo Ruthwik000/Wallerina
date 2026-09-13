@@ -10,9 +10,10 @@ import { useWallet } from "@/components/WalletProvider";
 import Matrix from "@/components/charts/Matrix";
 import { ratio, usd } from "@/lib/format";
 import styles from "../page.module.css";
+import RiskHistoryPanel from "./RiskHistoryPanel";
 
 export default function RiskPage() {
-  const { risk, portfolio, simulation, excluded } = useWallet();
+  const { address, risk, portfolio, simulation, excluded } = useWallet();
 
   const header = (
     <PageHeader
@@ -59,6 +60,8 @@ export default function RiskPage() {
               size="lg"
             />
           </div>
+
+          <RiskHistoryPanel address={address} />
 
           <div className={`${styles.grid} ${styles.split}`}>
             <Panel

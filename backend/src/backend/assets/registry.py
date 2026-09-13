@@ -43,6 +43,29 @@ NATIVE_TOKENS: dict[str, tuple[str, str, int]] = {
     "matic-mainnet": ("POL", "Polygon", 18),
 }
 
+# EVM chain IDs of the networks trades can be executed on.
+CHAIN_IDS: dict[str, int] = {
+    "eth-mainnet": 1,
+    "base-mainnet": 8453,
+    "arb-mainnet": 42161,
+    "matic-mainnet": 137,
+}
+
+# Decimals of the registry stablecoins, needed to quote a swap into a stablecoin
+# the wallet does not already hold.
+STABLECOIN_DECIMALS: dict[str, int] = {
+    "USDC": 6,
+    "USDC.e": 6,
+    "USDbC": 6,
+    "USDT": 6,
+    "PYUSD": 6,
+    "DAI": 18,
+    "USDe": 18,
+    "FRAX": 18,
+    "USDP": 18,
+    "TUSD": 18,
+}
+
 # Fiat-referenced stablecoins, keyed by (network, lowercased contract address).
 STABLECOINS: dict[tuple[str, str], str] = {
     # Ethereum
@@ -169,3 +192,12 @@ def is_spam_symbol(symbol: str | None) -> bool:
 def price_symbol(symbol: str) -> str:
     """Map a registry symbol onto the symbol Alchemy prices it under."""
     return PRICE_SYMBOL_OVERRIDES.get(symbol, symbol)
+
+
+def stablecoin_address(network: str, symbol: str = "USDC") -> str | None:
+    """The registry contract address of a stablecoin on a network."""
+    network = normalise_network(network)
+    for (entry_network, address), entry_symbol in STABLECOINS.items():
+        if entry_network == network and entry_symbol == symbol:
+            return address
+    return None

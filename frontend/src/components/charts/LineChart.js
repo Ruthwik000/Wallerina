@@ -32,7 +32,10 @@ export default function LineChart({
   ]);
 
   const yTicks = ticks(domain, 3);
-  const xTickIndexes = [0, Math.floor(series.length / 3), Math.floor((series.length * 2) / 3), series.length - 1];
+  // Short series (2–3 points) produce repeated indexes; dedupe so keys stay unique.
+  const xTickIndexes = [
+    ...new Set([0, Math.floor(series.length / 3), Math.floor((series.length * 2) / 3), series.length - 1]),
+  ];
 
   return (
     <svg

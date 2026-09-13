@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 KNOWN_KEYS = {
     "ALCHEMY_API_KEY",
     "NVIDIA_API_KEY",
+    "ZEROEX_API_KEY",
+    "SESSION_SECRET",
+    "ADMIN_TOKEN",
     "POLYMARKET_GAMMA_URL",
     "POLYMARKET_CLOB_URL",
 }

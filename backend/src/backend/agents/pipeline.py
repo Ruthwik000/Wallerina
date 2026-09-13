@@ -1,17 +1,19 @@
 """The recommendation pipeline (specification section 3), as a LangGraph graph.
 
-    START -> goal -> data -> simulate -+-> allocate   -+-> explain -> record -> END
-                                       +-> wallet     -+
-                                       +-> market     -+
-                                       +-> stablecoin -+
+    START -> goal -> data -> simulate -+-> allocate -> rebalance -+-> explain -> record -> END
+                                       +-> wallet                 -+
+                                       +-> market                 -+
+                                       +-> stablecoin             -+
 
 * **goal** runs first and exactly once. Its ``AgentContext`` (intent plus the
   global rules) is written into the graph state, and every later node reads it
   from there; no downstream agent re-reads the goal or invents thresholds.
 * **data** fetches the wallet, prices and prediction markets. It is the only
   node that talks to flaky upstreams, so it alone carries a retry policy.
-* **allocate** and the three analysis agents run in parallel; ``explain`` waits
-  for all four.
+* **allocate** and the three analysis agents run in parallel. **rebalance**
+  follows the allocation: it proposes trades, lists the book after them, and
+  simulates the book as held and at the target on identical market draws.
+  ``explain`` waits for rebalance and all three agents.
 * An analysis agent that crashes degrades to a placeholder report plus a
   warning instead of failing the whole recommendation. The allocation engine
   is not protected that way: without a decision there is nothing to recommend.
@@ -36,7 +38,17 @@ from langgraph.types import RetryPolicy
 
 from backend.agents import analysts, goal as goal_layer, judgement
 from backend.aws import database, telemetry
-from backend.models.agents import AgentContext, AgentReport, Finding, Judgement, Recommendation, Trade
+from backend.models.agents import (
+    AgentContext,
+    AgentReport,
+    Finding,
+    Judgement,
+    OutcomeSummary,
+    PositionAfter,
+    RebalanceOutlook,
+    Recommendation,
+    Trade,
+)
 from backend.models.goal import AllocationDecision
 from backend.models.market import MarketStress
 from backend.models.quant import RiskMetrics, SimulationResult
@@ -49,6 +61,10 @@ logger = logging.getLogger(__name__)
 # Paths used by the drawdown probe. Low enough to bisect quickly, high enough
 # for the drawdown estimate to be stable.
 PROBE_PATHS = 3_000
+
+# Paths for the held-versus-target comparison shown to the user.
+OUTLOOK_PATHS = 5_000
+OUTLOOK_SEED = 7
 
 # Upstream providers fail transiently (rate limits, timeouts). Data errors such
 # as InsufficientDataError are not retried: asking again will not help.
@@ -79,6 +95,8 @@ class PipelineState(TypedDict, total=False):
     market_report: AgentReport
     stablecoin_report: AgentReport
     trades: list[Trade]
+    holdings_after: list[PositionAfter]
+    outlook: RebalanceOutlook | None
     judgement: Judgement | None
     recommendation: Recommendation
 
@@ -205,21 +223,75 @@ stablecoin_node = _analysis_agent(
 ANALYSIS_NODES = ("wallet", "market", "stablecoin")
 
 
-async def explain_node(state: PipelineState) -> dict:
-    decision = state["decision"]
-    reports = [state[f"{name}_report"] for name in ANALYSIS_NODES]
+def _outlook(
+    context: AgentContext, estimate, stress: MarketStress, decision: AllocationDecision
+) -> RebalanceOutlook:
+    """Simulate the book as held and at the target, with the same seed.
+
+    Identical draws mean the difference between the two rows comes from the
+    allocation alone, not from sampling noise.
+    """
+    horizon = context.horizon_days
+    common = {
+        "horizon_days": horizon,
+        "simulations": OUTLOOK_PATHS,
+        "seed": OUTLOOK_SEED,
+        "stress": stress if stress.available else None,
+    }
+
+    def summary(result: SimulationResult) -> OutcomeSummary:
+        return OutcomeSummary(**result.model_dump(include=set(OutcomeSummary.model_fields)))
+
+    if not estimate.stable_mask.any():
+        held = analysis.run_simulation(estimate, estimate.total_value, **common)
+        return RebalanceOutlook(
+            horizon_days=horizon,
+            simulations=OUTLOOK_PATHS,
+            current=summary(held),
+            note="The wallet holds no recognised stablecoin, so the rebalanced book cannot be simulated",
+        )
+
+    held = analysis.run_simulation(
+        estimate, estimate.total_value, stablecoin_ratio=estimate.stablecoin_ratio, **common
+    )
+    target = analysis.run_simulation(
+        estimate, estimate.total_value, stablecoin_ratio=decision.target_stablecoin_ratio, **common
+    )
+    return RebalanceOutlook(
+        horizon_days=horizon, simulations=OUTLOOK_PATHS, current=summary(held), target=summary(target)
+    )
+
+
+async def rebalance_node(state: PipelineState) -> dict:
+    """Trades, the book after them, and the simulated effect of making them."""
+    decision, portfolio, risk = state["decision"], state["portfolio"], state["risk"]
 
     trades = (
-        analysts.propose_trades(state["portfolio"], state["risk"], decision.target_stablecoin_ratio)
+        analysts.propose_trades(portfolio, risk, decision.target_stablecoin_ratio)
         if decision.rebalance_required
         else []
     )
+    update: dict = {"trades": trades, "holdings_after": analysts.positions_after(portfolio, trades)}
+
+    # The outlook is supporting evidence: without it the recommendation stands.
+    try:
+        update["outlook"] = _outlook(state["context"], state["estimate"], state["stress"], decision)
+    except Exception as error:
+        logger.exception("Rebalance outlook failed")
+        update["outlook"] = None
+        update["warnings"] = [f"rebalance outlook failed: {error}"]
+
+    return update
+
+
+async def explain_node(state: PipelineState) -> dict:
+    reports = [state[f"{name}_report"] for name in ANALYSIS_NODES]
     verdict = (
-        await judgement.explain(state["context"], decision, reports)
+        await judgement.explain(state["context"], state["decision"], reports, outlook=state.get("outlook"))
         if state.get("explain", True)
         else None
     )
-    return {"trades": trades, "judgement": verdict}
+    return {"judgement": verdict}
 
 
 async def record_node(state: PipelineState) -> dict:
@@ -235,6 +307,8 @@ async def record_node(state: PipelineState) -> dict:
         reports=[state[f"{name}_report"] for name in ANALYSIS_NODES],
         judgement=state.get("judgement"),
         trades=state.get("trades", []),
+        holdings_after=state.get("holdings_after", []),
+        outlook=state.get("outlook"),
         warnings=state.get("warnings", []),
     )
 
@@ -257,6 +331,7 @@ def build_graph():
     graph.add_node("data", data_node, retry_policy=DATA_RETRY)
     graph.add_node("simulate", simulate_node)
     graph.add_node("allocate", allocate_node)
+    graph.add_node("rebalance", rebalance_node)
     graph.add_node("wallet", wallet_node)
     graph.add_node("market", market_node)
     graph.add_node("stablecoin", stablecoin_node)
@@ -267,10 +342,10 @@ def build_graph():
     graph.add_edge("goal", "data")
     graph.add_edge("data", "simulate")
 
-    parallel = ["allocate", *ANALYSIS_NODES]
-    for name in parallel:
+    for name in ("allocate", *ANALYSIS_NODES):
         graph.add_edge("simulate", name)
-    graph.add_edge(parallel, "explain")  # waits for all four branches
+    graph.add_edge("allocate", "rebalance")
+    graph.add_edge(["rebalance", *ANALYSIS_NODES], "explain")  # waits for every branch
 
     graph.add_edge("explain", "record")
     graph.add_edge("record", END)

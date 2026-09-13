@@ -10,13 +10,25 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 # Dependencies resolve in their own layer, so application edits don't
 # invalidate the install on every build.
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-install-project --no-dev
 
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
 
+# Lambda image for the scheduled jobs and the queue worker: the same code and
+# locked dependencies on the Lambda Python runtime. Each function picks its
+# handler (ImageConfig.Command in deploy/wallerina.yaml). Build it with
+# --target lambda --provenance=false; Lambda rejects multi-manifest images.
+FROM public.ecr.aws/lambda/python:3.12 AS lambda
+
+COPY --from=build /app/.venv/lib/python3.12/site-packages ${LAMBDA_TASK_ROOT}
+
+CMD ["backend.aws.handlers.refresh_market_data"]
+
+
+# The API image for ECS / Fargate (the default target).
 FROM python:3.12-slim-bookworm AS runtime
 
 RUN useradd --create-home --uid 10001 wallerina

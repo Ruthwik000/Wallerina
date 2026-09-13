@@ -24,11 +24,13 @@ class ReturnMatrix:
     """Aligned daily log returns for a set of assets.
 
     ``returns`` has shape (observations, assets) and column ``i`` corresponds
-    to ``symbols[i]``.
+    to ``symbols[i]``. ``days`` are the price dates the returns were taken
+    between, so it holds one more entry than there are observations.
     """
 
     symbols: list[str]
     returns: np.ndarray
+    days: tuple[str, ...] = ()
 
     @property
     def observations(self) -> int:
@@ -109,7 +111,7 @@ def align_histories(
     # Returns are taken down each column of the date-aligned price matrix.
     matrix = np.diff(np.log(prices), axis=0)
 
-    return ReturnMatrix(symbols=symbols, returns=matrix), dropped
+    return ReturnMatrix(symbols=symbols, returns=matrix, days=tuple(ordered_days)), dropped
 
 
 def annualised_volatility(returns: np.ndarray) -> np.ndarray:

@@ -84,6 +84,7 @@ export default function PortfolioPage() {
               <Panel title="Allocation" meta="Top positions by value">
                 <Donut
                   segments={portfolio.holdings.slice(0, 8).map((holding) => ({
+                    id: `${holding.network}:${holding.contract_address ?? "native"}`,
                     symbol: holding.symbol,
                     weight: holding.portfolio_ratio * 100,
                   }))}

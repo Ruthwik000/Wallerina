@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import Panel from "@/components/Panel";
 import Stat from "@/components/Stat";
@@ -8,9 +8,27 @@ import Table from "@/components/Table";
 import { ErrorState } from "@/components/States";
 import FanChart from "@/components/charts/FanChart";
 import Histogram from "@/components/charts/Histogram";
-import { runSimulation } from "@/lib/api";
+import { fetchSimulationJob, runSimulation } from "@/lib/api";
 import { ratio, usd } from "@/lib/format";
 import styles from "../page.module.css";
+
+// Heavy runs are queued by the API; their result is polled for.
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+
+function wait(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true }
+    );
+  });
+}
 
 const HORIZONS = [30, 90, 180, 365];
 const RUNS = [1000, 10000, 50000];
@@ -30,27 +48,60 @@ export default function SimulationRunner({ address, initial, scenarios, hasStabl
   const [runs, setRuns] = useState(initial.simulations);
   const [stablecoinRatio, setStablecoinRatio] = useState(null);
   const [running, setRunning] = useState(false);
+  const [queuedJob, setQueuedJob] = useState(null);
   const [error, setError] = useState(null);
+  const controllerRef = useRef(null);
+
+  // Stop polling if the page is left mid-run.
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   const run = async () => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+
     setRunning(true);
+    setQueuedJob(null);
     setError(null);
 
     try {
-      const next = await runSimulation({
-        wallet_address: address,
-        horizon_days: horizon,
-        simulations: runs,
-        // A fixed seed keeps repeated runs comparable; only the parameters move.
-        seed: 7,
-        use_prediction_markets: false,
-        ...(stablecoinRatio === null ? {} : { stablecoin_ratio: stablecoinRatio }),
-      });
+      let next = await runSimulation(
+        {
+          wallet_address: address,
+          horizon_days: horizon,
+          simulations: runs,
+          // A fixed seed keeps repeated runs comparable; only the parameters move.
+          seed: 7,
+          use_prediction_markets: false,
+          ...(stablecoinRatio === null ? {} : { stablecoin_ratio: stablecoinRatio }),
+        },
+        { signal: controller.signal }
+      );
+
+      if (next.job_id) {
+        setQueuedJob(next);
+        const deadline = Date.now() + POLL_TIMEOUT_MS;
+        while (next.status === "queued") {
+          if (Date.now() > deadline) {
+            throw new Error("The queued simulation is taking longer than expected. Try again later.");
+          }
+          await wait(POLL_INTERVAL_MS, controller.signal);
+          next = await fetchSimulationJob(next.job_id, { signal: controller.signal });
+        }
+        if (next.status !== "complete" || !next.result) {
+          throw new Error(next.error || "The queued simulation failed.");
+        }
+        next = next.result;
+      }
+
       setResult(next);
     } catch (failure) {
-      setError(failure);
+      if (failure.name !== "AbortError") setError(failure);
     } finally {
-      setRunning(false);
+      if (controllerRef.current === controller) {
+        setRunning(false);
+        setQueuedJob(null);
+      }
     }
   };
 
@@ -196,8 +247,16 @@ export default function SimulationRunner({ address, initial, scenarios, hasStabl
             </dl>
 
             <Button variant="primary" full onClick={run} disabled={running}>
-              {running ? "Running" : "Run simulation"}
+              {running ? (queuedJob ? "Queued on the worker" : "Running") : "Run simulation"}
             </Button>
+
+            {queuedJob && (
+              <p className={styles.helper}>
+                {runs.toLocaleString("en-US")} paths over {horizon} days is a heavy run,
+                so it was queued (job {queuedJob.job_id.slice(0, 8)}). Checking for the
+                result every {POLL_INTERVAL_MS / 1000} seconds.
+              </p>
+            )}
 
             {error && <ErrorState error={error} title="Simulation failed" />}
           </div>

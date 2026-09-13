@@ -106,3 +106,16 @@ class SimulationResult(BaseModel):
     drift_mode: str
     volatility_multiplier: float
     seed: int | None
+
+
+class SimulationJob(BaseModel):
+    """A queued simulation. Poll ``status_url`` until status is complete or failed."""
+
+    job_id: str
+    status: str = Field(description="queued, complete or failed")
+    status_url: str
+    requested_at: str | None = None
+    completed_at: str | None = None
+    parameters: dict | None = None
+    result: SimulationResult | None = None
+    error: str | None = None

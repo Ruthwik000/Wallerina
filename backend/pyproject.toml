@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.31.0",
     "boto3>=1.43.93",
+    "eth-account>=0.14.0",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "langgraph>=1.2.11",

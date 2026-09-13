@@ -88,7 +88,17 @@ def _risk() -> RiskMetrics:
 
 def _simulation(drawdown: float) -> SimulationResult:
     return SimulationResult.model_construct(
-        horizon_days=90, expected_drawdown=drawdown, max_drawdown_p95=drawdown * 2
+        horizon_days=90,
+        stablecoin_ratio=0.0,
+        expected_value=10_000.0,
+        median_value=10_000.0,
+        p5=8_000.0,
+        p95=12_000.0,
+        probability_of_loss=0.5,
+        expected_drawdown=drawdown,
+        max_drawdown_p95=drawdown * 2,
+        expected_return=0.0,
+        volatility_of_outcomes=0.2,
     )
 
 
@@ -110,7 +120,9 @@ def graph_services(monkeypatch):
     """Stub every service the graph touches; records what each agent saw."""
     seen: dict[str, object] = {"horizons": [], "load_calls": 0}
 
-    portfolio = SimpleNamespace(stablecoin_ratio=0.1, concentration=0.5, model_dump=lambda **_: {})
+    portfolio = SimpleNamespace(
+        stablecoin_ratio=0.1, concentration=0.5, total_value_usd=10_000.0, holdings=[], model_dump=lambda **_: {}
+    )
     estimate = SimpleNamespace(
         correlation=[[1.0, 0.8], [0.8, 1.0]],
         stable_mask=np.array([False, False]),
@@ -148,7 +160,7 @@ def graph_services(monkeypatch):
 
         return agent
 
-    async def explain(context, decision, reports):
+    async def explain(context, decision, reports, **kwargs):
         seen["judgement"] = context
         seen["reports"] = reports
         return Judgement(summary="s", reasoning=["r"], caveats=["c"], used_model=False)
@@ -218,6 +230,6 @@ class TestPipelineGraph:
         assert seen["stablecoin"] is context
         assert seen["judgement"] is context
         assert seen["rules"] is context.rules, "the allocation engine uses the context's rules"
-        assert seen["horizons"] == [45], "the simulator runs on the context's horizon"
+        assert seen["horizons"] and set(seen["horizons"]) == {45}, "every simulation runs on the context's horizon"
         assert result.rules == context.rules
         assert result.goal == "Preserve capital"

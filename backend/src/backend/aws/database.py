@@ -23,7 +23,7 @@ import asyncio
 import functools
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from backend.core.config import get_settings
@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS simulations (
     result            JSONB
 );
 CREATE INDEX IF NOT EXISTS simulations_address ON simulations (address, requested_at DESC);
+ALTER TABLE simulations ADD COLUMN IF NOT EXISTS error TEXT;
 
 -- Every recommendation is stored with the inputs behind it, so any past
 -- decision can be reconstructed exactly.
@@ -107,6 +108,26 @@ CREATE TABLE IF NOT EXISTS wallet_goals (
     goal              TEXT NOT NULL,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Single-use sign-in nonces, shared by every API process.
+CREATE TABLE IF NOT EXISTS auth_nonces (
+    nonce             TEXT PRIMARY KEY,
+    expires_at        TIMESTAMPTZ NOT NULL
+);
+
+-- Transactions the user's wallet signed for a rebalance, and what the chain said.
+CREATE TABLE IF NOT EXISTS executions (
+    tx_hash           TEXT PRIMARY KEY,
+    address           TEXT NOT NULL,
+    chain_id          INTEGER NOT NULL,
+    leg_id            TEXT NOT NULL,
+    kind              TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'submitted',
+    submitted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS executions_address_time
+    ON executions (address, submitted_at DESC);
 """
 
 # Goals are also kept in memory, so a chosen goal still works for this process
@@ -383,6 +404,85 @@ async def get_goal(address: str) -> dict | None:
     return {**record, "persisted": False} if record else None
 
 
+async def store_nonce(nonce: str, expires_at: datetime) -> bool:
+    """Store a sign-in nonce. False when there is no database to hold it."""
+    connection_pool = await pool()
+    if connection_pool is None:
+        return False
+
+    try:
+        async with connection_pool.acquire() as connection:
+            await connection.execute("DELETE FROM auth_nonces WHERE expires_at < now()")
+            await connection.execute(
+                "INSERT INTO auth_nonces (nonce, expires_at) VALUES ($1, $2)", nonce, expires_at
+            )
+        return True
+    except Exception as error:
+        logger.warning("Could not store sign-in nonce: %s", error)
+        return False
+
+
+async def consume_nonce(nonce: str) -> bool | None:
+    """Use a nonce up atomically. None when there is no database."""
+    connection_pool = await pool()
+    if connection_pool is None:
+        return None
+
+    try:
+        async with connection_pool.acquire() as connection:
+            used = await connection.fetchval(
+                "DELETE FROM auth_nonces WHERE nonce = $1 AND expires_at > now() RETURNING nonce",
+                nonce,
+            )
+        return used is not None
+    except Exception as error:
+        logger.warning("Could not consume sign-in nonce: %s", error)
+        return False
+
+
+async def record_execution(address: str, tx_hash: str, chain_id: int, leg_id: str, kind: str) -> bool:
+    connection_pool = await pool()
+    if connection_pool is None:
+        return False
+
+    try:
+        async with connection_pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO executions (tx_hash, address, chain_id, leg_id, kind)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (tx_hash) DO NOTHING
+                """,
+                tx_hash.lower(),
+                address.lower(),
+                chain_id,
+                leg_id,
+                kind,
+            )
+        return True
+    except Exception as error:
+        logger.warning("Could not record execution %s: %s", tx_hash, error)
+        return False
+
+
+async def set_execution_status(tx_hash: str, status: str) -> bool:
+    connection_pool = await pool()
+    if connection_pool is None:
+        return False
+
+    try:
+        async with connection_pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE executions SET status = $2, updated_at = now() WHERE tx_hash = $1",
+                tx_hash.lower(),
+                status,
+            )
+        return True
+    except Exception as error:
+        logger.warning("Could not update execution %s: %s", tx_hash, error)
+        return False
+
+
 async def recent_recommendations(address: str, limit: int = 10) -> list[dict]:
     connection_pool = await pool()
     if connection_pool is None:
@@ -405,6 +505,80 @@ async def recent_recommendations(address: str, limit: int = 10) -> list[dict]:
         return [dict(row) for row in rows]
     except Exception as error:
         logger.warning("Could not read recommendations: %s", error)
+        return []
+
+
+# A chart needs a few hundred points; snapshots arrive every five minutes, so
+# longer windows are averaged into buckets.
+HISTORY_MAX_POINTS = 500
+
+
+def history_bucket(days: int) -> timedelta:
+    """Bucket width that keeps a window of ``days`` under HISTORY_MAX_POINTS."""
+    return max(timedelta(minutes=5), timedelta(days=days) / HISTORY_MAX_POINTS)
+
+
+async def portfolio_value_history(address: str, days: int) -> list[dict]:
+    """Recorded portfolio value over the last ``days``. Empty without a database."""
+    connection_pool = await pool()
+    if connection_pool is None:
+        return []
+
+    try:
+        async with connection_pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT date_bin($3::interval, captured_at, TIMESTAMPTZ '2000-01-01') AS bucket,
+                       avg(total_value_usd)::float8 AS value_usd
+                FROM portfolio_snapshots
+                WHERE address = $1 AND captured_at >= now() - $2::interval
+                GROUP BY bucket
+                ORDER BY bucket
+                """,
+                address.lower(),
+                timedelta(days=days),
+                history_bucket(days),
+            )
+        return [{"t": row["bucket"].isoformat(), "value_usd": row["value_usd"]} for row in rows]
+    except Exception as error:
+        logger.warning("Could not read portfolio history: %s", error)
+        return []
+
+
+async def risk_metrics_history(address: str, days: int) -> list[dict]:
+    """Recorded risk metrics over the last ``days``. Empty without a database."""
+    connection_pool = await pool()
+    if connection_pool is None:
+        return []
+
+    try:
+        async with connection_pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT date_bin($3::interval, captured_at, TIMESTAMPTZ '2000-01-01') AS bucket,
+                       avg(annual_volatility)::float8 AS annual_volatility,
+                       avg(value_at_risk)::float8 AS value_at_risk,
+                       avg(max_drawdown)::float8 AS max_drawdown
+                FROM risk_metrics
+                WHERE address = $1 AND captured_at >= now() - $2::interval
+                GROUP BY bucket
+                ORDER BY bucket
+                """,
+                address.lower(),
+                timedelta(days=days),
+                history_bucket(days),
+            )
+        return [
+            {
+                "t": row["bucket"].isoformat(),
+                "annual_volatility": row["annual_volatility"],
+                "value_at_risk": row["value_at_risk"],
+                "max_drawdown": row["max_drawdown"],
+            }
+            for row in rows
+        ]
+    except Exception as error:
+        logger.warning("Could not read risk history: %s", error)
         return []
 
 
@@ -453,7 +627,31 @@ async def complete_simulation_job(job_id: str, result: dict) -> bool:
         return False
 
 
+async def fail_simulation_job(job_id: str, error: str) -> bool:
+    """Mark a job that cannot succeed, so polling clients stop waiting."""
+    connection_pool = await pool()
+    if connection_pool is None:
+        return False
+
+    try:
+        async with connection_pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE simulations
+                SET status = 'failed', completed_at = now(), error = $2
+                WHERE job_id = $1
+                """,
+                job_id,
+                error[:1000],
+            )
+        return True
+    except Exception as failure:
+        logger.warning("Could not mark simulation job failed: %s", failure)
+        return False
+
+
 async def simulation_job(job_id: str) -> dict | None:
+    """A job's state, with its JSON columns decoded."""
     connection_pool = await pool()
     if connection_pool is None:
         return None
@@ -461,9 +659,27 @@ async def simulation_job(job_id: str) -> dict | None:
     try:
         async with connection_pool.acquire() as connection:
             row = await connection.fetchrow(
-                "SELECT * FROM simulations WHERE job_id = $1", job_id
+                """
+                SELECT job_id, address, status, requested_at, completed_at,
+                       parameters, result, error
+                FROM simulations WHERE job_id = $1
+                """,
+                job_id,
             )
-        return dict(row) if row else None
     except Exception as error:
         logger.warning("Could not read simulation job: %s", error)
         return None
+
+    if row is None:
+        return None
+
+    return {
+        "job_id": row["job_id"],
+        "address": row["address"],
+        "status": row["status"],
+        "requested_at": row["requested_at"].isoformat(),
+        "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+        "parameters": json.loads(row["parameters"]) if row["parameters"] else None,
+        "result": json.loads(row["result"]) if row["result"] else None,
+        "error": row["error"],
+    }
