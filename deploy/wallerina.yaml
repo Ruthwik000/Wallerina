@@ -46,10 +46,18 @@ Parameters:
     Type: String
     Default: ""
     Description: Email notified when an alarm fires. Blank creates the alarms without notifications.
+  CloudFrontPrefixListId:
+    Type: String
+    Default: ""
+    Description: >-
+      The region's com.amazonaws.global.cloudfront.origin-facing prefix list. Without a
+      certificate, CloudFront serves the API over HTTPS and only it may reach the balancer.
 
 Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  # No domain of our own: CloudFront provides HTTPS on a *.cloudfront.net name.
+  UseCloudFront: !Equals [!Ref CertificateArn, ""]
 
 Resources:
   # ---------------------------------------------------------------------------
@@ -187,7 +195,12 @@ Resources:
       GroupDescription: Wallerina load balancer
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        # Behind CloudFront, only its edge servers may connect: nobody can bypass
+        # HTTPS, and the viewer address header it adds cannot be forged.
+        - !If
+          - UseCloudFront
+          - { IpProtocol: tcp, FromPort: 80, ToPort: 80, SourcePrefixListId: !Ref CloudFrontPrefixListId }
+          - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
         - !If
           - HasCertificate
           - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
@@ -256,6 +269,36 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: UseCloudFront
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${AWS::StackName} API over HTTPS
+        HttpVersion: http2
+        # Includes India and the rest of Asia, not only North America and Europe.
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: api
+            DomainName: !GetAtt LoadBalancer.DNSName
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              # 60 s is the default maximum; a quota increase allows up to 180.
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: api
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          # Managed policies: CachingDisabled, and AllViewerAndCloudFrontHeaders-2022-06
+          # so the API sees query strings, CORS headers and CloudFront-Viewer-Address.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: 33f36d7e-f396-46d9-90e0-52428a34d9dc
+          # Chat replies stream as server-sent events; compression would buffer them.
+          Compress: false
+
   # ---------------------------------------------------------------------------
   # API on ECS Fargate
   # ---------------------------------------------------------------------------
@@ -286,6 +329,7 @@ Resources:
             - { Name: APP_ENV, Value: production }
             - { Name: CORS_ORIGINS, Value: !Ref CorsOrigins }
             - { Name: TRUST_PROXY_HEADERS, Value: "true" }
+            - { Name: BEHIND_CLOUDFRONT, Value: !If [UseCloudFront, "true", "false"] }
             - { Name: AWS_ENABLED, Value: "true" }
             - { Name: AWS_REGION, Value: !Ref AWS::Region }
             - { Name: AWS_SECRET_ID, Value: !Ref AppSecret }
@@ -590,7 +634,7 @@ Outputs:
     Value: !If
       - HasCertificate
       - !Sub https://${LoadBalancer.DNSName}
-      - !Sub http://${LoadBalancer.DNSName}
+      - !Sub https://${ApiDistribution.DomainName}
   AppSecretArn:
     Description: Put ALCHEMY_API_KEY and NVIDIA_API_KEY here (see deploy/README.md).
     Value: !Ref AppSecret

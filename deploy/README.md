@@ -34,16 +34,20 @@ It **reuses** the existing Aurora cluster `database-1` (IAM authentication) and 
 2. **Install Docker and the AWS CLI v2.** The images are built for `linux/amd64`.
 3. **Decide the frontend origin.** Every browser origin that calls the API must be
    listed in `CORS_ORIGINS`.
-4. **Optional, for HTTPS:** request an ACM certificate in `eu-north-1` for your API
-   domain and pass `CERTIFICATE_ARN`. Without it the API is served over plain HTTP.
-   A frontend served over HTTPS cannot call an HTTP API because browsers block mixed
-   content, so treat this as required for anything public.
+4. **HTTPS.** Browsers block an HTTPS frontend from calling an HTTP API, so the API
+   is always served over HTTPS:
+   - **No domain (default):** CloudFront sits in front of the load balancer and
+     serves the API on `https://<id>.cloudfront.net`. The load balancer accepts
+     connections only from CloudFront. CloudFront waits at most 60 seconds for a
+     response. Recommendations with a free-text goal can take longer, so request
+     a quota increase for the origin response timeout if you see 504s.
+   - **Own domain:** request an ACM certificate in `eu-north-1` for it and pass
+     `CERTIFICATE_ARN`. The load balancer then serves HTTPS itself, with no CloudFront.
 
 ## Deploy
 
 ```bash
-CORS_ORIGINS=https://app.example.com \
-CERTIFICATE_ARN=arn:aws:acm:eu-north-1:123456789012:certificate/... \
+CORS_ORIGINS=https://wallerina.vercel.app \
 ALARM_EMAIL=you@example.com \
 ./deploy/deploy.sh
 ```
@@ -75,7 +79,8 @@ ones pass health checks, and rolls back if they never do.
    ```
 
 3. **Point the frontend at the API** by setting `NEXT_PUBLIC_API_URL` to the stack's
-   `ApiUrl` output.
+   `ApiUrl` output. On Vercel, set it under Project → Settings → Environment
+   Variables and redeploy, because Next.js bakes `NEXT_PUBLIC_*` values in at build time.
 4. **Confirm the alarm subscription** email, if you set `ALARM_EMAIL`.
 5. **Check the database connection:**
    `curl <ApiUrl>/health/database` should report `current_user: wallerina_app`.
@@ -98,6 +103,8 @@ The task and functions run with `APP_ENV=production`, which means:
 
 - **Load balancer and Fargate:** a small always-on baseline, roughly $16 and $35 a
   month in most regions at one task.
+- **CloudFront:** pay per request and per GB, which is negligible at low traffic. The
+  first 1 TB and 10 million requests each month are free.
 - **Aurora:** the cluster auto-pauses after 5 minutes idle. The 5-minute snapshot job
   wakes it every run, so it effectively never pauses. Lengthen the schedule in
   `RefreshSchedule` if that cost matters.

@@ -100,7 +100,7 @@ limiter = ratelimit.SlidingWindowLimiter()
 async def rate_limit(request: Request, call_next):
     settings = get_settings()
     if settings.rate_limit_per_minute > 0 and ratelimit.is_limited(request.method, request.url.path):
-        key = ratelimit.client_key(request, settings.trust_proxy_headers)
+        key = ratelimit.client_key(request, settings.trust_proxy_headers, settings.behind_cloudfront)
         retry_after = limiter.check(key, settings.rate_limit_per_minute)
         if retry_after is not None:
             return JSONResponse(
@@ -549,13 +549,14 @@ async def auth_verify(request: SignInRequest) -> Session:
 
 
 @app.post("/api/execution/{address}/plan", response_model=ExecutionPlan)
-async def execution_plan(
-    address: str, request: PlanRequest, authorization: str | None = Header(default=None)
-) -> ExecutionPlan:
-    """Turn a fresh recommendation into same-network swaps for the wallet to sign."""
+async def execution_plan(address: str, request: PlanRequest) -> ExecutionPlan:
+    """Turn a fresh recommendation into draft same-network swaps.
+
+    Read-only and built from public balances, like the recommendation itself, so
+    no sign-in is needed. Quotes, which carry signable transactions, still need one.
+    """
     if not ADDRESS_PATTERN.fullmatch(address):
         raise HTTPException(status_code=400, detail="Enter a valid 42-character address starting with 0x")
-    _require_wallet(address, authorization)
 
     goal = request.goal
     if not goal:

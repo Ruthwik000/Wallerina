@@ -47,6 +47,11 @@ SUBNET_IDS="${SUBNET_IDS:-$(aws ec2 describe-subnets --region "$REGION" \
   --filters "Name=vpc-id,Values=$VPC_ID" Name=default-for-az,Values=true \
   --query 'Subnets[].SubnetId' --output text | tr '\t' ',')}"
 
+# Without a certificate, CloudFront provides HTTPS and is the only allowed caller.
+CLOUDFRONT_PREFIX_LIST="$(aws ec2 describe-managed-prefix-lists --region "$REGION" \
+  --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
+  --query 'PrefixLists[0].PrefixListId' --output text)"
+
 log "Application stack $STACK (VPC $VPC_ID, subnets $SUBNET_IDS)"
 aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
   --template-file "$HERE/wallerina.yaml" --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
@@ -57,7 +62,8 @@ aws cloudformation deploy --region "$REGION" --stack-name "$STACK" \
     "CorsOrigins=$CORS_ORIGINS" \
     "CertificateArn=${CERTIFICATE_ARN:-}" \
     "AlarmEmail=${ALARM_EMAIL:-}" \
-    "DesiredCount=${DESIRED_COUNT:-1}"
+    "DesiredCount=${DESIRED_COUNT:-1}" \
+    "CloudFrontPrefixListId=$CLOUDFRONT_PREFIX_LIST"
 
 aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
   --query 'Stacks[0].Outputs' --output table

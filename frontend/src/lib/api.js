@@ -120,6 +120,16 @@ export function fetchRecommendation(address, { goal, signal } = {}) {
   return request(`/api/recommendation/${address}?${params}`, { signal });
 }
 
+/* The recommendation's sells as draft same-network swaps. Read-only: nothing is
+   quoted, signed or sent. Runs a fresh recommendation, so it is fetched on demand. */
+export function fetchDraftSwaps(address, { goal, signal } = {}) {
+  return request(`/api/execution/${address}/plan`, {
+    method: "POST",
+    body: JSON.stringify({ goal: goal || null }),
+    signal,
+  });
+}
+
 export function fetchRecommendationHistory(address, { limit = 10, signal } = {}) {
   return request(`/api/recommendation/${address}/history?limit=${limit}`, { signal });
 }

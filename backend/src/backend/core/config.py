@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 30
     # Behind a load balancer, read the caller's address from X-Forwarded-For.
     trust_proxy_headers: bool = False
+    # Behind CloudFront (and the balancer accepts only CloudFront), read the
+    # caller's address from CloudFront-Viewer-Address instead.
+    behind_cloudfront: bool = False
 
     # --- Wallet sign-in (EIP-4361) ------------------------------------------
     # Signs session tokens. Set it wherever more than one API process runs:

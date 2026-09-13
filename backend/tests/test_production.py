@@ -61,6 +61,19 @@ class TestLimiter:
         assert ratelimit.client_key(request, trust_proxy_headers=True) == "203.0.113.9"
         assert ratelimit.client_key(request, trust_proxy_headers=False) == "10.0.0.5"
 
+    def test_behind_cloudfront_the_viewer_address_is_used(self):
+        request = SimpleNamespace(
+            headers={
+                "x-forwarded-for": "198.51.100.7, 130.176.1.1",
+                "cloudfront-viewer-address": "2001:db8::1:51234",
+            },
+            client=SimpleNamespace(host="10.0.0.5"),
+        )
+
+        assert ratelimit.client_key(request, trust_proxy_headers=True, behind_cloudfront=True) == "2001:db8::1"
+        # Without CloudFront in front, a client could send that header itself.
+        assert ratelimit.client_key(request, trust_proxy_headers=True) == "130.176.1.1"
+
 
 class TestHttp:
     def test_the_limit_returns_429_with_cors_headers(self, monkeypatch):

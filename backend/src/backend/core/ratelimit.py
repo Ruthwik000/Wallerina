@@ -35,14 +35,22 @@ def is_limited(method: str, path: str) -> bool:
     return any(method == route_method and pattern.match(path) for route_method, pattern in LIMITED_ROUTES)
 
 
-def client_key(request, trust_proxy_headers: bool) -> str:
+def client_key(request, trust_proxy_headers: bool, behind_cloudfront: bool = False) -> str:
     """The caller's address.
 
     Behind a load balancer every connection comes from the balancer and the
     caller is named in X-Forwarded-For. Only the rightmost entry can be
     trusted: the balancer appends it, while anything to its left was sent by
     the client and could be forged to dodge the limit.
+
+    Behind CloudFront that rightmost entry is a CloudFront edge server, shared by
+    many callers, so the viewer's own address comes from CloudFront-Viewer-Address
+    ("ip:port"). It is trusted only when the balancer accepts nothing but CloudFront.
     """
+    if trust_proxy_headers and behind_cloudfront:
+        viewer = request.headers.get("cloudfront-viewer-address", "").strip()
+        if viewer:
+            return viewer.rsplit(":", 1)[0]
     if trust_proxy_headers:
         forwarded = request.headers.get("x-forwarded-for", "")
         hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]

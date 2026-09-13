@@ -12,10 +12,11 @@ import Donut from "@/components/charts/Donut";
 import FanChart from "@/components/charts/FanChart";
 import { ratio, usd } from "@/lib/format";
 import styles from "../page.module.css";
+import DraftSwapsPanel from "./DraftSwapsPanel";
 import PerformancePanel from "./PerformancePanel";
 
 export default function DashboardPage() {
-  const { address, portfolio, risk, simulation, marketStress, excluded } = useWallet();
+  const { address, goal, portfolio, risk, simulation, marketStress, excluded } = useWallet();
 
   const header = (
     <PageHeader
@@ -189,6 +190,8 @@ export default function DashboardPage() {
                 </div>
               </Panel>
             </div>
+
+            <DraftSwapsPanel address={address} goal={goal} />
 
             {excluded.length > 0 && (
               <Notice>
