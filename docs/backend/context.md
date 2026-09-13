@@ -1,3 +1,27 @@
+> **Status: superseded, kept as the record of intent.**
+>
+> This was the specification written before the backend existed. It stops
+> mid-sentence in section 10 — sections 10 to 16 were never written — yet the
+> code they would have described is built and tested. Finishing it now would be
+> documenting the past against the present.
+>
+> It is frozen here because the decisions in sections 1 to 9 still govern the
+> system and are cited throughout the code: the DATA -> QUANT -> RISK ->
+> ALLOCATION -> EXPLANATION separation (section 2), the preset fast path
+> (section 6), the global rules (section 7), and the rule that an unrecognised
+> asset is never assumed stable (section 9). Those are live constraints, not
+> history.
+>
+> For what the system does **now**, read:
+>
+> * `../../context.md` — current state, stack and decisions
+> * `../../backend/README.md` — architecture, endpoints and known limitations
+> * `../../todo.md` — what is next
+>
+> Do not add to this file. Record new decisions in the root `context.md`.
+
+---
+
 # Wallerina Backend Specification
 
 ## 1. Project Context

@@ -155,6 +155,71 @@ class TestBuildPortfolio:
         assert portfolio.total_value_usd == 0
         assert portfolio.stablecoin_ratio == 0
 
+    def test_truncation_reaches_the_analyst_as_a_finding(self):
+        """The flag existing is not the point — a user has to be told.
+
+        A low page cap once hid a $19.5M WBTC position behind thousands of
+        airdropped tokens. Alchemy does not order results by value, so a
+        truncated scan looks exactly like a complete one: every number the
+        product shows is understated and nothing says so.
+        """
+        from backend.agents import analysts
+        from backend.models.agents import AgentContext
+        from backend.models.quant import RiskMetrics
+        from backend.models.goal import (
+            GoalIntent,
+            GoalType,
+            PortfolioRules,
+            RiskTolerance,
+        )
+
+        tokens = [token(address=USDC_ETH, symbol="USDC", decimals=6,
+                        balance=hex(5_000_000), price="1.0")]
+        portfolio = alchemy.build_portfolio("0xabc", tokens, truncated=True)
+        assert portfolio.scan_truncated is True
+
+        context = AgentContext(
+            wallet_address="0xabc",
+            goal="Grow steadily",
+            intent=GoalIntent(
+                goal_type=GoalType.BALANCED,
+                risk_tolerance=RiskTolerance.MODERATE,
+                maximum_drawdown=0.2,
+                source="preset",
+            ),
+            rules=PortfolioRules(
+                risk_tolerance=RiskTolerance.MODERATE,
+                base_stablecoin_ratio=0.4,
+                minimum_stablecoin_ratio=0.25,
+                maximum_stablecoin_ratio=0.7,
+                maximum_drawdown=0.2,
+                rebalance_threshold=0.1,
+                time_horizon_days=30,
+            ),
+        )
+
+        risk = RiskMetrics(
+            portfolio_annual_volatility=0.0,
+            value_at_risk=0.0,
+            value_at_risk_usd=0.0,
+            expected_shortfall=0.0,
+            expected_shortfall_usd=0.0,
+            max_drawdown=0.0,
+            concentration=portfolio.concentration,
+            downside_exposure=portfolio.volatile_ratio,
+            confidence=0.95,
+            observations=180,
+            assets=[],
+            correlation_symbols=[],
+            correlation_matrix=[],
+        )
+
+        report = analysts.analyse_wallet(context, portfolio, risk)
+
+        assert "Incomplete scan" in [finding.label for finding in report.findings], (
+            "a truncated scan must surface to the user, not just set a flag"
+        )
+
     def test_truncation_is_reported(self):
         portfolio = alchemy.build_portfolio("0xabc", [token(address=UNI_ETH)], True)
         assert portfolio.scan_truncated is True

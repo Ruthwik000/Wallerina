@@ -3,14 +3,15 @@
 Data retrieval and the quantitative engine: wallet ingestion, asset
 classification, risk metrics and Monte Carlo simulation.
 
-**Implemented:** steps 1-3 and 5-10 of specification section 4 — portfolio
-retrieval, classification, market and prediction-market data, risk calculation
-and simulation.
+**Implemented:** all sixteen backend responsibilities of specification
+section 4 — portfolio retrieval and classification, the goal/intent layer,
+market and prediction-market data, risk calculation, Monte Carlo simulation,
+the allocation engine, the judgement and grounding agents, persistence, wallet
+sign-in, draft swaps, and the AWS layer.
 
-**Not implemented yet (deliberately out of scope):** the goal/intent layer, the
-analysis agents, the allocation engine, the judgement agent and LLM
-explanation, persistence, and every AWS service. No endpoint produces a
-recommendation.
+**Not deployed yet:** Secrets Manager, Lambda, EventBridge and ECS are defined
+in `deploy/` but have not been run against a live account. See *Known
+limitations* at the end of this file for what is and is not verified.
 
 ## Setup
 
@@ -23,7 +24,7 @@ uv run uvicorn backend.main:app --reload
 Interactive API docs: http://localhost:8000/docs
 
 ```bash
-uv run pytest             # 89 tests
+uv run pytest             # 268 tests
 ```
 
 ## Endpoints
@@ -31,17 +32,35 @@ uv run pytest             # 89 tests
 | Method | Path | Purpose |
 |---|---|---|
 | GET  | `/health` | Liveness and configuration check |
+| GET  | `/health/database` | Database connectivity (needs RDS) |
 | GET  | `/api/portfolio/{address}` | Classified, priced holdings |
 | GET  | `/api/prices/history` | Daily price history by symbol or contract |
 | GET  | `/api/risk/{address}` | Volatility, VaR, shortfall, drawdown, correlation |
 | GET  | `/api/prediction-markets` | Active Polymarket markets for given assets |
 | GET  | `/api/market-stress` | Downside signal condensed from those markets |
 | POST | `/api/simulate` | Monte Carlo over the wallet's holdings |
+| GET  | `/api/simulate/jobs/{job_id}` | Status and result of a queued simulation |
 | POST | `/api/simulate/scenarios` | Compare stablecoin ratios on identical draws |
 | GET  | `/api/analysis/{address}` | Portfolio + risk + stress + simulation in one pass |
 | GET  | `/api/recommendation/{address}` | Full agent pipeline → allocation + explanation |
 | GET  | `/api/recommendation/{address}/history` | Past recommendations (needs RDS) |
+| GET  | `/api/goals/presets` | The predefined goals and their rules |
+| GET  | `/api/goal/{address}` | The wallet's saved goal (needs RDS) |
+| PUT  | `/api/goal/{address}` | Save a goal (needs sign-in) |
+| GET  | `/api/history/{address}/performance` | Portfolio value over time (needs RDS) |
+| GET  | `/api/history/{address}/risk` | Risk metrics over time (needs RDS) |
+| POST | `/api/refresh/run` | Run the refresh jobs once (`X-Admin-Token`) |
+| GET  | `/api/auth/nonce` | Single-use nonce for EIP-4361 sign-in |
+| POST | `/api/auth/verify` | Verify the signed message, issue a session |
+| POST | `/api/execution/{address}/plan` | Draft same-network swaps (read-only, no sign-in) |
+| POST | `/api/execution/{address}/quote` | Price one leg via 0x (needs sign-in) |
+| POST | `/api/execution/{address}/transactions` | Record a submitted transaction (needs sign-in) |
+| GET  | `/api/execution/{address}/transactions/{tx_hash}` | Status of a recorded transaction |
 | POST | `/api/chat` | Streaming portfolio Q&A (SSE) |
+
+**Wallerina never signs or sends a transaction.** The execution endpoints
+prepare and record; the wallet owner signs in their own wallet, or nothing
+happens.
 
 ## Upstream APIs
 
@@ -128,6 +147,46 @@ within 1-2%. It also asserts the properties the product depends on — a
 correlated book has a worse 5th percentile than an independent one, and expected
 drawdown falls monotonically as the stablecoin ratio rises.
 
+## Market-implied volatility
+
+A binary market on a price level is a probability statement about that level.
+`Will ETH dip to $1,000 by December 31, 2026?` at 6.5c says the market puts
+6.5% on `price <= 1000` at that date; `Will ETH reach $8,000` at 2.15c says
+2.15% on `price >= 8000`, so `1 - p` is a point on the same curve. A family of
+them on one asset at one expiry is a market-implied cumulative distribution,
+priced by people with money at risk.
+
+`compute_market_stress` discards that structure — it averages every downside
+probability into one bounded multiplier, so a 2% chance of a catastrophic fall
+and a 14% chance of a mild one are the same input. `quant/implied.py` keeps the
+levels instead and fits one lognormal per asset per expiry, consistent with the
+simulator's zero-drift convention, leaving volatility as the only free
+parameter:
+
+```text
+P(S_T <= K) = Phi( ( ln(K / S_0) + sigma^2 T / 2 ) / ( sigma sqrt(T) ) )
+```
+
+On seven live ETH markets at 31 December 2026, with ETH at $3,000, the fit
+lands at roughly 100% annualised against a 55% reference — the simulator had
+been running ETH at about half the volatility the market was pricing.
+
+**Guards.** Expiry is the grouping key, not a refinement: two expiries are two
+random variables, and mixing them yields a plausible-looking curve that means
+nothing. A curve that decreases is repaired to its running maximum, the
+standard isotonic fix for a stale quote on a thin book, but the repair count is
+carried and a curve needing more than 25% repair is refused. Fewer than three
+points is interpolation, not estimation. A fit pinned to a volatility bound is
+discarded as a data error rather than a market view. Range markets naming two
+levels are refused outright.
+
+**Application.** `services/analysis.py::calibrate_volatilities` blends the
+implied figure into the realised one, weighted by the fit's own quality, so a
+ragged curve is ignored rather than trusted. Assets with no prediction market
+keep their historical estimate, which is also what happens when Polymarket is
+unreachable. The pre-calibration values stay on the estimate so a
+recommendation can say what moved and why.
+
 ## Model provider
 
 All inference runs on **NVIDIA NIM** (`agents/llm.py`), NVIDIA's hosted,
@@ -135,9 +194,9 @@ OpenAI-compatible API at `integrate.api.nvidia.com`, authenticated with
 `NVIDIA_API_KEY`. The `openai` package is used only as the protocol client;
 nothing is sent to OpenAI.
 
-The model is one setting, `CHAT_MODEL`, and defaults to Moonshot Kimi K2.6
-(`moonshotai/kimi-k2.6`), which is strong at the tool calls the chat and agents
-make. Any NIM chat model with tool calling can be substituted. Structured output
+The model is one setting, `CHAT_MODEL`, and defaults to
+`nvidia/nemotron-3-super-120b-a12b`. Any NIM chat model with tool calling can be
+substituted — `moonshotai/kimi-k2.6` is a strong alternative. Structured output
 is obtained by forcing a single function call (retried with `tool_choice=auto`
 for models that reject forcing), so it works across models.
 
@@ -256,10 +315,14 @@ src/backend/
   reduces downside markets to a bounded volatility multiplier. Distinguishing a
   10% chance of a 5% dip from a 10% chance of a 50% crash needs the market
   analysis agent, which is not built yet.
-* **Volatility is historical.** A single realised-volatility estimate per asset;
-  no GARCH, no implied volatility, no jumps or fat tails. Real crypto returns
-  are more extreme than a lognormal, so tail estimates are, if anything,
-  optimistic.
+* **Volatility is partly forward-looking, and still thin-tailed.**
+  `quant/implied.py` fits a lognormal to the cumulative distribution implied by
+  Polymarket's price-level markets and blends it into the realised estimate
+  (see *Market-implied volatility* above), so the figure is no longer purely
+  historical. It remains a lognormal: no GARCH, no jumps, no fat tails. Real
+  crypto returns are more extreme, so tail estimates are still, if anything,
+  optimistic. The implied side is also risk-neutral — prediction-market prices
+  carry risk premia and fees, and are not real-world probabilities.
 * **Persistence needs RDS.** Without `RDS_HOST` nothing is stored, so the
   recommendation log and history endpoint are empty. The schema is created
   automatically on boot when a database is configured.
@@ -267,6 +330,9 @@ src/backend/
   simulations end to end), CloudWatch metrics and RDS with IAM authentication
   have been exercised against a real account. Secrets Manager, Lambda,
   EventBridge and ECS are defined in `deploy/` but have not been deployed.
+* **The minimum swap size is an exclusive boundary.** `MIN_LEG_USD` is $5, and
+  a leg must be worth strictly more than that: after Ethereum's $25 gas
+  reserve, a $30 position leaves exactly $5, which gas alone would consume.
 * **Allocation constants are calibrated by judgement, not fitted.** The
   reference volatility, sensitivities and caps in `quant/allocation.py` are
   reasoned defaults; they have not been backtested against historical

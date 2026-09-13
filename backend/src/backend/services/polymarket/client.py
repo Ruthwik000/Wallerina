@@ -26,6 +26,7 @@ from backend.models.market import (
     MarketStress,
     PredictionMarket,
 )
+from backend.quant import implied
 from backend.services.http import UpstreamError, get_client
 
 logger = logging.getLogger(__name__)
@@ -186,7 +187,21 @@ async def search_events(query: str) -> list[dict]:
     return response.json().get("events") or []
 
 
-async def fetch_probability_change(token_id: str, window_seconds: int = 300) -> float | None:
+# A 300-second window at minute fidelity was the original setting, carried over
+# from reference.ipynb. It returned exactly +0.00% on nearly every market: a
+# book holding a few hundred dollars simply does not trade within any given
+# minute, so first and last price were the same tick. A day at hourly fidelity
+# actually moves, and is still short enough to read as "what changed recently".
+PROBABILITY_WINDOW_SECONDS = 24 * 60 * 60
+PROBABILITY_FIDELITY_MINUTES = 60
+
+# Below this, a reported move is as likely to be one stale quote as real news.
+MIN_LIQUIDITY_FOR_CHANGE = 1_000.0
+
+
+async def fetch_probability_change(
+    token_id: str, window_seconds: int = PROBABILITY_WINDOW_SECONDS
+) -> float | None:
     """Relative change in a YES token's price over a trailing window."""
     settings = get_settings()
 
@@ -202,7 +217,7 @@ async def fetch_probability_change(token_id: str, window_seconds: int = 300) -> 
                 "market": token_id,
                 "startTs": now - window_seconds,
                 "endTs": now,
-                "fidelity": 1,
+                "fidelity": PROBABILITY_FIDELITY_MINUTES,
             },
             timeout=settings.polymarket_timeout_seconds,
         )
@@ -263,6 +278,8 @@ async def get_asset_markets(asset: str, with_change: bool = False) -> list[Predi
                 if token_id is None or probability is None:
                     continue
 
+                end_date = market.get("endDate") or event.get("endDate") or None
+
                 markets.append(
                     PredictionMarket(
                         question=question,
@@ -272,6 +289,8 @@ async def get_asset_markets(asset: str, with_change: bool = False) -> list[Predi
                         liquidity=_to_float(market.get("liquidity")),
                         volume=_to_float(market.get("volume")),
                         direction=_direction(question),
+                        threshold=implied.parse_threshold(question),
+                        end_date=str(end_date)[:10] if end_date else None,
                     )
                 )
 
@@ -280,11 +299,15 @@ async def get_asset_markets(asset: str, with_change: bool = False) -> list[Predi
     markets = markets[:MAX_MARKETS_PER_ASSET]
 
     if with_change and markets:
+        # Thin books report a flat line whatever the window, so they are not
+        # asked: a None reads as "no signal", which is the truth, while a 0.0
+        # would read as "no movement", which is a claim the data cannot support.
+        deep = [m for m in markets if m.liquidity >= MIN_LIQUIDITY_FOR_CHANGE]
         changes = await asyncio.gather(
-            *(fetch_probability_change(m.yes_token_id) for m in markets)  # type: ignore[arg-type]
+            *(fetch_probability_change(m.yes_token_id) for m in deep)  # type: ignore[arg-type]
         )
-        for market, change in zip(markets, changes, strict=True):
-            market.change_5m = change
+        for market, change in zip(deep, changes, strict=True):
+            market.probability_change_24h = change
 
     return markets
 

@@ -37,7 +37,8 @@ GAS_RESERVE_USD: dict[str, float] = {
     "matic-mainnet": 1.0,
 }
 
-# A swap smaller than this costs more in gas and slippage than it moves.
+# A swap this small costs more in gas and slippage than it moves, so the
+# boundary is exclusive: a leg must be worth strictly more than this.
 MIN_LEG_USD = 5.0
 
 APPROVE_SELECTOR = "0x095ea7b3"  # approve(address,uint256)
@@ -114,7 +115,7 @@ def build_legs(holdings: list[Holding], trades: list[Trade]) -> tuple[list[Execu
 
     for symbol, (remaining, reason) in to_sell.items():
         for holding in by_symbol.get(symbol, []):
-            if remaining < MIN_LEG_USD:
+            if remaining <= MIN_LEG_USD:
                 break
 
             network = normalise_network(holding.network)
@@ -128,7 +129,7 @@ def build_legs(holdings: list[Holding], trades: list[Trade]) -> tuple[list[Execu
 
             reserve = GAS_RESERVE_USD.get(network, 0.0) if holding.contract_address is None else 0.0
             amount_usd = min(remaining, holding.value_usd - reserve)
-            if amount_usd < MIN_LEG_USD:
+            if amount_usd <= MIN_LEG_USD:
                 continue
 
             target = _buy_target(holding, holdings)
@@ -161,7 +162,7 @@ def build_legs(holdings: list[Holding], trades: list[Trade]) -> tuple[list[Execu
             )
             remaining -= amount_usd
 
-        if remaining >= MIN_LEG_USD:
+        if remaining > MIN_LEG_USD:
             skipped.append(
                 f"${remaining:,.0f} of the {symbol} sale has no executable position "
                 "(gas reserve, unsupported network or dust)"

@@ -87,6 +87,24 @@ class Settings(BaseSettings):
     # Addressed by IP so the lookup itself does not depend on local DNS.
     dns_over_https_url: str = "https://1.1.1.1/dns-query"
 
+    # --- Kalshi -----------------------------------------------------------
+    # A CFTC-regulated exchange. Its price markets are published as a dense
+    # strike ladder, which reads directly as a cumulative distribution, and it
+    # is reachable where Polymarket is DNS-blocked.
+    #
+    # The base URL is external-api.kalshi.com, NOT the trading-api or
+    # api.elections hosts most guides still name — verified live. Market data
+    # needs no authentication, so there is deliberately no key here.
+    kalshi_enabled: bool = True
+    kalshi_base_url: str = "https://external-api.kalshi.com/trade-api/v2"
+    kalshi_timeout_seconds: float = 8.0
+    kalshi_failure_threshold: int = 2
+    kalshi_cooldown_seconds: float = 120.0
+    # A strike quoted wider than this is a guess, not a price.
+    kalshi_max_spread: float = 0.10
+    # Strikes with less open interest than this carry no information.
+    kalshi_min_open_interest: float = 100.0
+
     # --- HTTP -------------------------------------------------------------
     http_timeout_seconds: float = 30.0
     http_max_connections: int = 20

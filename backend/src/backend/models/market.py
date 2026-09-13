@@ -27,10 +27,28 @@ class PredictionMarket(BaseModel):
     yes_token_id: str | None = None
     liquidity: float = 0.0
     volume: float = 0.0
-    change_5m: float | None = None
+    probability_change_24h: float | None = Field(
+        default=None,
+        description=(
+            "Relative change in the YES price over 24 hours. None when the "
+            "market is too thin to report a meaningful move."
+        ),
+    )
     direction: str | None = Field(
         default=None,
         description="'downside' for markets resolving on a price fall, 'upside' on a rise",
+    )
+    threshold: float | None = Field(
+        default=None,
+        description="The price level the market resolves on, in USD, when one is stated",
+    )
+    end_date: str | None = Field(
+        default=None,
+        description="ISO date the market resolves. Probabilities are only comparable within one expiry.",
+    )
+    source: str = Field(
+        default="polymarket",
+        description="Exchange the quote came from. Carried so an explanation can cite it.",
     )
 
 

@@ -7,13 +7,15 @@ here; this module stops once the quantitative evidence has been produced.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import date
 
 import numpy as np
 
 from backend.assets.registry import AssetClass
 from backend.core.config import get_settings
-from backend.models.market import MarketStress, PriceHistory
+from backend.models.market import AssetPredictionMarkets, MarketStress, PriceHistory
 from backend.models.portfolio import Holding, Portfolio
 from backend.models.quant import (
     AssetRisk,
@@ -23,7 +25,9 @@ from backend.models.quant import (
     ScenarioResult,
     SimulationResult,
 )
+from backend.quant import implied
 from backend.quant import risk as risk_engine
+from backend.quant.implied import ImpliedFit
 from backend.quant.monte_carlo import (
     DriftMode,
     SimulationConfig,
@@ -33,6 +37,7 @@ from backend.quant.monte_carlo import (
 )
 from backend.quant.risk import TRADING_DAYS, ReturnMatrix
 from backend.services.cache import analysis_cache
+from backend.services.kalshi import client as kalshi
 from backend.services.polymarket import client as polymarket
 from backend.services.wallet import alchemy
 
@@ -65,6 +70,16 @@ class Position:
     @property
     def is_stable(self) -> bool:
         return self.classification is AssetClass.STABLECOIN
+
+    @property
+    def spot_price(self) -> float:
+        """Implied unit price, needed to read a prediction market's level.
+
+        Derived from the position rather than re-fetched: a market asking
+        "will ETH dip to $1,000" is only meaningful against the price ETH is
+        actually marked at in this portfolio.
+        """
+        return self.value_usd / self.quantity if self.quantity > 0 else 0.0
 
 
 def aggregate_positions(holdings: list[Holding]) -> list[Position]:
@@ -108,6 +123,11 @@ class EstimationResult:
         self.drift = drift
         self.total_value = total_value
         self.excluded = excluded
+
+        # The realised estimate is kept even after calibration, so a
+        # recommendation can say what changed and why.
+        self.historical_volatilities = volatilities.copy()
+        self.implied_fits: dict[str, ImpliedFit] = {}
 
     @property
     def symbols(self) -> list[str]:
@@ -450,20 +470,119 @@ async def _load_estimate_uncached(
     return portfolio, estimate
 
 
-async def load_market_stress(estimate: EstimationResult) -> MarketStress:
-    """Fetch prediction markets for the held assets and condense them.
+def calibrate_volatilities(
+    estimate: EstimationResult,
+    asset_markets: list[AssetPredictionMarkets],
+    today: date | None = None,
+    horizon_days: int | None = None,
+) -> dict[str, ImpliedFit]:
+    """Blend market-implied volatility into the historical estimate, in place.
 
-    Polymarket is not required for the analysis to run: if it is unreachable
-    the simulation proceeds with an unadjusted volatility estimate.
+    ``quant/risk.py`` measures what an asset did; a prediction market prices
+    what it is expected to do. The second is what a forward-looking simulation
+    actually wants, and the README's standing "volatility is historical"
+    limitation is exactly this gap.
+
+    Only assets with a usable fit move, and none moves all the way: the weight
+    comes from the fit's own quality, so a thin or ragged curve is ignored
+    rather than trusted. Assets with no prediction market keep their realised
+    estimate untouched, which is also what happens when Polymarket is
+    unreachable.
+
+    The estimate is mutated because risk, simulation and allocation all read
+    these same arrays, and a calibration only some of them saw would be worse
+    than none.
+    """
+    if not asset_markets:
+        return {}
+
+    spots = {
+        position.symbol.upper(): position.spot_price
+        for position in estimate.positions
+        if position.spot_price > 0
+    }
+
+    fits = implied.fit_assets(asset_markets, spots, today, horizon_days)
+    if not fits:
+        return {}
+
+    applied: dict[str, ImpliedFit] = {}
+
+    for index, position in enumerate(estimate.positions):
+        fit = fits.get(position.symbol.upper())
+        if fit is None or position.is_stable:
+            continue
+
+        weight = implied.weight_for(fit)
+        if weight <= 0:
+            continue
+
+        historical = float(estimate.historical_volatilities[index])
+        estimate.volatilities[index] = implied.blend(historical, fit.sigma, weight)
+        applied[position.symbol.upper()] = fit
+
+        logger.info(
+            "Calibrated %s volatility %.1f%% -> %.1f%% (implied %.1f%%, weight "
+            "%.2f, %d markets at %s from %s, rmse %.3f, horizon %s)",
+            position.symbol, historical * 100, estimate.volatilities[index] * 100,
+            fit.sigma * 100, weight, fit.points_used, fit.expiry,
+            "+".join(fit.sources), fit.rmse,
+            "matched" if fit.horizon_matched else "annualised",
+        )
+
+    estimate.implied_fits = applied
+    return applied
+
+
+async def _gather_markets(symbols: list[str]) -> tuple[list, list]:
+    """Fetch both exchanges concurrently; either may fail without the other.
+
+    Returned separately rather than pre-merged because they are used for two
+    different things: the stress score is a Polymarket construct tuned to its
+    question wording, while the implied fit reads the union.
+    """
+    settings = get_settings()
+
+    async def safe(coro, provider: str):
+        try:
+            return await coro
+        except Exception as error:  # noqa: BLE001 - upstream failures expected
+            logger.warning("%s data unavailable: %s", provider, error)
+            return []
+
+    tasks = [safe(polymarket.get_markets_for_assets(symbols), "Polymarket")]
+    if settings.kalshi_enabled:
+        tasks.append(safe(kalshi.get_markets_for_assets(symbols), "Kalshi"))
+
+    results = await asyncio.gather(*tasks)
+    return results[0], (results[1] if len(results) > 1 else [])
+
+
+async def load_market_stress(
+    estimate: EstimationResult,
+    calibrate: bool = True,
+    horizon_days: int | None = None,
+) -> MarketStress:
+    """Read prediction markets for the held assets, across both exchanges.
+
+    Two things come out of the same fetch:
+
+    * a bounded stress score, the long-standing Polymarket signal, and
+    * a calibration of ``estimate.volatilities`` toward what the combined
+      markets imply (see ``calibrate_volatilities``), unless ``calibrate`` is
+      false.
+
+    Neither exchange is required. Polymarket is DNS-blocked on some networks
+    and Kalshi may be disabled outright; whichever answers contributes, and if
+    neither does the simulation proceeds on the unadjusted historical estimate.
     """
     symbols = [
         position.symbol for position in estimate.positions if not position.is_stable
     ]
 
-    try:
-        markets = await polymarket.get_markets_for_assets(symbols)
-    except Exception as error:
-        logger.warning("Prediction-market data unavailable: %s", error)
+    polymarket_markets, kalshi_markets = await _gather_markets(symbols)
+
+    if not polymarket_markets and not kalshi_markets:
         return MarketStress(
             score=0.0,
             volatility_multiplier=1.0,
@@ -472,4 +591,11 @@ async def load_market_stress(estimate: EstimationResult) -> MarketStress:
             available=False,
         )
 
-    return polymarket.compute_market_stress(markets)
+    if calibrate:
+        calibrate_volatilities(
+            estimate,
+            implied.merge_sources(polymarket_markets, kalshi_markets),
+            horizon_days=horizon_days,
+        )
+
+    return polymarket.compute_market_stress(polymarket_markets)

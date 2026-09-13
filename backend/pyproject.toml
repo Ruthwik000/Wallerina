@@ -1,10 +1,11 @@
 [project]
 name = "backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "Wallerina backend: wallet analysis, risk metrics, Monte Carlo simulation and the agent pipeline behind its stablecoin allocation advice."
 readme = "README.md"
 authors = [
-    { name = "dnspavankumar", email = "dnspavankumar722@gmail.com" }
+    { name = "dnspavankumar", email = "dnspavankumar722@gmail.com" },
+    { name = "Gurram Ruthwik Goud", email = "gruthwik44@gmail.com" },
 ]
 requires-python = ">=3.12"
 dependencies = [
